@@ -1,17 +1,16 @@
 package in.kevinj.natladder.common.netimpl;
 
+import in.kevinj.natladder.common.model.ClientType;
 import in.kevinj.natladder.common.model.LocalRouter;
 import in.kevinj.natladder.common.model.PacketHeaders;
 import in.kevinj.natladder.common.model.RemoteNode;
-import in.kevinj.natladder.common.util.UnorderedQueue;
+import in.kevinj.natladder.common.util.PacketBuilder;
+import in.kevinj.natladder.common.util.PacketParser;
 
 import java.io.IOException;
 import java.net.SocketAddress;
 import java.nio.ByteBuffer;
-import java.nio.channels.CancelledKeyException;
-import java.nio.channels.SelectionKey;
-import java.nio.channels.SocketChannel;
-import java.util.Iterator;
+import java.nio.channels.Channel;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -19,7 +18,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-public class ClientSession {
+public abstract class ClientSession {
 	private static final Logger LOG = Logger.getLogger(ClientSession.class.getName());
 
 	private static final int HEADER_LENGTH = Integer.SIZE / 8 + Short.SIZE / 8;
@@ -61,61 +60,61 @@ public class ClientSession {
 
 	private final RemoteNode model;
 	private final Runnable postClose;
-	private final SocketChannel commChn;
-	private final SelectionKey selectionKey;
 	private Runnable preClose;
 
 	private final AtomicBoolean closeEventsTriggered;
 	private ByteBuffer readBuffer;
 	private int readBufferOverflow;
 	private MessageType nextMessageType;
-	private final UnorderedQueue sendQueue;
 
-	private KeepAliveTask heartbeatTask;
-	private final Runnable idleTask = new Runnable() {
-		@Override
-		public void run() {
-			startPingTask();
-		}
-	};
+	private final KeepAliveTask heartbeatTask;
+	private final Runnable idleTask;
 	private ScheduledFuture<?> idleTaskFuture;
 
-	public ClientSession(RemoteNode model, SocketChannel channel, SelectionKey acceptedKey, Runnable onClose) {
+	public ClientSession(RemoteNode model, Runnable onClose) {
 		this.model = model;
 		this.postClose = onClose;
-		commChn = channel;
-		selectionKey = acceptedKey;
 
 		closeEventsTriggered = new AtomicBoolean(false);
 		readBuffer = model.getLocalNode().getBufferCache().takeBuffer();
 		if (model.forwardRaw()) {
 			nextMessageType = MessageType.RAW;
+
+			heartbeatTask = null;
+			idleTask = null;
 		} else {
 			readBuffer.limit(HEADER_LENGTH);
 			nextMessageType = MessageType.HEADER;
-		}
-		sendQueue = new UnorderedQueue();
 
-		heartbeatTask = new KeepAliveTask();
-		idleTaskFuture = model.getLocalNode().getWheelTimer().schedule(idleTask, IDLE_TIME, TimeUnit.MILLISECONDS);
+			heartbeatTask = new KeepAliveTask();
+			idleTask = new Runnable() {
+				@Override
+				public void run() {
+					startPingTask();
+				}
+			};
+			idleTaskFuture = model.getLocalNode().getWheelTimer().schedule(idleTask, IDLE_TIME, TimeUnit.MILLISECONDS);
+		}
 
 		LOG.log(Level.FINE, "Established connection with {0}", getAddress());
+	}
+
+	protected RemoteNode getModel() {
+		return model;
 	}
 
 	public void setPreClose(Runnable r) {
 		preClose = r;
 	}
 
-	public SocketAddress getAddress() {
-		return commChn.socket().getRemoteSocketAddress();
-	}
+	public abstract SocketAddress getAddress();
 
 	/* package-private */ ByteBuffer readBuffer() {
 		return readBuffer;
 	}
 
 	private boolean processHeader(int readBytes) {
-		assert !model.forwardRaw();
+		assert !model.forwardRaw() : "Forwarding raw in processHeader()";
 
 		if (readBuffer.remaining() != 0)
 			// keep reading until we get the full header
@@ -123,10 +122,10 @@ public class ClientSession {
 
 		// fully read the header and parse it
 		readBuffer.flip();
-		assert readBuffer.remaining() == HEADER_LENGTH;
+		assert readBuffer.remaining() == HEADER_LENGTH : readBuffer.remaining();
 		int recvPktRemaining = readBuffer.getInt();
 		model.setThisMessageDest(readBuffer.getShort());
-		assert !readBuffer.hasRemaining();
+		assert !readBuffer.hasRemaining() : "HEADER_LENGTH too long for actual header";
 
 		readBuffer.clear();
 		if (model.isThisMessageForUs()) {
@@ -148,7 +147,7 @@ public class ClientSession {
 	}
 
 	private boolean processBody(int readBytes) {
-		assert !model.forwardRaw();
+		assert !model.forwardRaw() : "Forwarding raw in procesBody()";
 
 		if (readBytes == 0)
 			// non-blocking read didn't find any body content immediately after header
@@ -162,7 +161,12 @@ public class ClientSession {
 
 			// fully read the body and parse it
 			readBuffer.flip();
-			model.processControlPacket(readBuffer);
+			model.processControlPacket(new PacketParser(readBuffer) {
+				@Override
+				public void dispose() {
+					model.getLocalNode().getBufferCache().tryReturnBuffer(buf);
+				}
+			});
 
 			// in case we had to allocate a bespoke non-direct buffer to handle
 			// a large command packet, we will throw out readBuffer since it will
@@ -175,12 +179,12 @@ public class ClientSession {
 		} else {
 			// received message to be forwarded
 			int recvPktRemaining = readBufferOverflow + readBuffer.remaining();
-			ClientSession nextNode = model.getNextNode();
+			RemoteNode nextNode = model.getNextNode();
 			if (nextNode == null) {
 				model.cutLinkFound();
 				model.getLocalNode().getBufferCache().tryReturnBuffer(readBuffer);
 			} else {
-				nextNode.writeMessage(readBuffer);
+				nextNode.getClientSession().writeMessage(readBuffer);
 			}
 
 			// to minimize copying between buffers, we convert our current read buffer
@@ -204,7 +208,7 @@ public class ClientSession {
 	}
 
 	private boolean processRaw(int readBytes) {
-		assert model.forwardRaw();
+		assert model.forwardRaw() && model.getLocalNode().getLocalType() != ClientType.CENTRAL_RELAY : (model.forwardRaw() + " " + model.getLocalNode().getLocalType());
 
 		if (readBytes == 0)
 			// non-blocking read didn't find any body content immediately after header
@@ -213,7 +217,7 @@ public class ClientSession {
 		// received message to be forwarded
 		short[] relayChain = model.getLocalNode().getRelayChain(model.getRemoteCode());
 		int recvPktRemaining = readBuffer.remaining();
-		ClientSession nextNode = model.getNextNode();
+		RemoteNode nextNode = model.getNextNode();
 		if (nextNode == null) {
 			model.cutLinkFound();
 			model.getLocalNode().getBufferCache().tryReturnBuffer(readBuffer);
@@ -221,13 +225,13 @@ public class ClientSession {
 			// must first prefix packet with received packet length and the relay chain.
 			// TODO: if relayChain has changed since last message was received,
 			// make sure new and old relayChain are exactly the same lengths. otherwise,
-			// readBuffer has to have bytes shifted over to accomodate prefix.
+			// readBuffer has to have bytes shifted over to accommodate prefix.
 
 			// calculate length of packet to forward.
 			readBuffer.putInt(0, readBuffer.position() - (Integer.SIZE / 8 + Short.SIZE / 8 * relayChain.length));
 			for (int i = 0; i < relayChain.length; i++)
 				readBuffer.putShort(Integer.SIZE / 8 + Short.SIZE / 8 * i, relayChain[i]);
-			nextNode.writeMessage(readBuffer);
+			nextNode.getClientSession().writeMessage(readBuffer);
 		}
 
 		// to minimize copying between buffers, we convert our current read buffer
@@ -244,7 +248,8 @@ public class ClientSession {
 	}
 
 	/* package-private */ boolean readMessage(int readBytes) {
-		idleTaskFuture.cancel(false);
+		if (!model.forwardRaw())
+			idleTaskFuture.cancel(false);
 		if (readBytes == -1) {
 			// connection closed
 			close("EOF received");
@@ -260,59 +265,15 @@ public class ClientSession {
 				case RAW:
 					return processRaw(readBytes);
 				default:
-					throw new IllegalStateException("nextMessageType is not a valid value.");
+					throw new IllegalStateException("Invalid nextMessageType " + nextMessageType);
 			}
 		} finally {
-			idleTaskFuture = model.getLocalNode().getWheelTimer().schedule(idleTask, IDLE_TIME, TimeUnit.MILLISECONDS);
+			if (!model.forwardRaw())
+				idleTaskFuture = model.getLocalNode().getWheelTimer().schedule(idleTask, IDLE_TIME, TimeUnit.MILLISECONDS);
 		}
 	}
 
-	/**
-	 * @return 0 if not all queued messages could be sent in a non-blocking
-	 * manner, 1 if all queued messages have been successfully sent, -1 if there
-	 * is another flush attempt in progress, or -2 if there's an error and the
-	 * channel is closed.
-	 */
-	/* package-private */ int tryFlushSendQueue() {
-		if (!sendQueue.shouldWrite())
-			return -1;
-		try {
-			do {
-				Iterator<ByteBuffer> iter = sendQueue.pop().iterator();
-				while (iter.hasNext()) {
-					ByteBuffer buf = iter.next();
-					if (buf.remaining() == commChn.write(buf)) {
-						model.getLocalNode().getBufferCache().tryReturnBuffer(buf);
-					} else {
-						sendQueue.insert(buf);
-						while (iter.hasNext())
-							sendQueue.insert(iter.next());
-						return 0;
-					}
-				}
-			} while (!sendQueue.willBlock());
-			return 1;
-		} catch (IOException ex) {
-			//does an IOException in write always mean an invalid channel?
-			close(ex.getMessage());
-			return -2;
-		} finally {
-			sendQueue.setCanWrite();
-		}
-	}
-
-	private void writeMessage(ByteBuffer buf) {
-		buf.flip();
-		sendQueue.insert(buf);
-		try {
-			if (selectionKey.isValid() && tryFlushSendQueue() == 0) {
-				selectionKey.interestOps(selectionKey.interestOps() | SelectionKey.OP_WRITE);
-				selectionKey.selector().wakeup();
-			}
-		} catch (CancelledKeyException e) {
-			//don't worry about it - session is already closed
-		}
-	}
+	protected abstract void writeMessage(ByteBuffer buf);
 
 	public void send(byte[] message, short... destinationChain) {
 		ByteBuffer buf = ByteBuffer.allocate(Integer.SIZE / 8 + Short.SIZE / 8 * destinationChain.length + message.length);
@@ -336,24 +297,28 @@ public class ClientSession {
 		return packetBuilder(32, destinationChain);
 	}
 
+	protected abstract Channel getChannel();
+
 	public boolean close(String reason) {
 		if (closeEventsTriggered.compareAndSet(false, true)) {
 			if (preClose != null)
 				preClose.run();
 
 			try {
-				commChn.close();
+				getChannel().close();
 			} catch (IOException ex) {
 				LOG.log(Level.WARNING, "Error while cutting connection with " + getAddress(), ex);
 			}
-			stopPingTask();
+			if (!model.forwardRaw())
+				stopPingTask();
 			//this check is thread safe - idleTaskFuture can never be null again after it has been assigned a non-null value
 			if (idleTaskFuture != null)
 				//client closed before we could send init packet
 				idleTaskFuture.cancel(false);
 
 			LOG.log(Level.FINE, "Cut connection with {0} ({1})", new Object[] { getAddress(), reason });
-			postClose.run();
+			if (postClose != null)
+				postClose.run();
 			return true;
 		}
 		return false;

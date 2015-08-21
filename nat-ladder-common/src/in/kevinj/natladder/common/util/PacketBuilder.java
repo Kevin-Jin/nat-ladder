@@ -1,9 +1,11 @@
-package in.kevinj.natladder.common.netimpl;
+package in.kevinj.natladder.common.util;
 
-import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
 
 public abstract class PacketBuilder {
+	private static final Charset utf8 = Charset.forName("UTF-8");
+
 	private final int prefixLen;
 	private ByteBuffer buf;
 
@@ -82,27 +84,23 @@ public abstract class PacketBuilder {
 	}
 
 	public PacketBuilder writePaddedString(String str, int fixedLength) {
-		try {
-			ensureCapacity(fixedLength);
-			byte[] encoded = str.getBytes("UTF-8");
-			int copied = Math.min(encoded.length, fixedLength);
-			writeBytes(encoded, 0, copied);
-			// pad with NUL characters. buf should have 0s in these
-			// positions (retaining default values) since we don't
-			// reset(), clear(), flip(), rewind(), or position() back.
-			buf.position(buf.position() + fixedLength - copied);
-			return this;
-		} catch (UnsupportedEncodingException e) {
-			throw new RuntimeException(e);
-		}
+		if (str == null) str = "";
+
+		ensureCapacity(fixedLength);
+		byte[] encoded = str.getBytes(utf8);
+		int copied = Math.min(encoded.length, fixedLength);
+		writeBytes(encoded, 0, copied);
+		// pad with NUL characters. buf should have 0s in these
+		// positions (retaining default values) since we don't
+		// reset(), clear(), flip(), rewind(), or position() back.
+		buf.position(buf.position() + fixedLength - copied);
+		return this;
 	}
 
 	public PacketBuilder writeString(String str) {
-		try {
-			return writeShort((short) str.length()).writeBytes(str.getBytes("UTF-8"));
-		} catch (UnsupportedEncodingException e) {
-			throw new RuntimeException(e);
-		}
+		if (str == null) str = "";
+
+		return writeShort((short) str.length()).writeBytes(str.getBytes(utf8));
 	}
 
 	protected abstract void commit(ByteBuffer buf);

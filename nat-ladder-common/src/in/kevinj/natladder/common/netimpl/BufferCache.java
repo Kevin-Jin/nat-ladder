@@ -35,7 +35,7 @@ public class BufferCache {
 		return ByteBuffer.allocateDirect(DEFAULT_BUFFER_SIZE);
 	}
 
-	public ByteBuffer takeBuffer() {
+	/* package-private */ ByteBuffer takeBuffer() {
 		ByteBuffer next = available.poll();
 		while (next != null && !isSatisfactory(next)) {
 			dispose(next);
@@ -51,7 +51,7 @@ public class BufferCache {
 	 * @param buf a buffer expected to be directly allocated and of size DEFAULT_BUFFER_SIZE.
 	 * @return false if rejected, true is accepted.
 	 */
-	public boolean tryReturnBuffer(ByteBuffer buf) {
+	/* package-private */ boolean tryReturnBuffer(ByteBuffer buf) {
 		buf.clear();
 		if (!isSatisfactory(buf))
 			return false;

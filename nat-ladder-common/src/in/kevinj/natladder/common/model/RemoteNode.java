@@ -1,8 +1,9 @@
 package in.kevinj.natladder.common.model;
 
 import in.kevinj.natladder.common.netimpl.ClientSession;
+import in.kevinj.natladder.common.util.PacketParser;
 
-import java.nio.ByteBuffer;
+import java.util.Map;
 
 public class RemoteNode {
 	public interface RemoteNodeFactory {
@@ -35,20 +36,20 @@ public class RemoteNode {
 			public void run() {
 				// notify source node (entry/exit) that our connection to external is closed.
 				short[] relayChain = parentModel.getRelayChain(getRemoteCode());
-				ClientSession nextNode = getNextNode();
+				RemoteNode nextNode = getNextNode();
 				if (nextNode != null)
-					nextNode.packetBuilder(Byte.SIZE / 8 + Short.SIZE / 8, relayChain[0], LocalRouter.CONTROL_CODE).writeByte(PacketHeaders.FOUND_CUT).writeShort(relayChain[1]).send();
+					nextNode.getClientSession().packetBuilder(Byte.SIZE / 8 + Short.SIZE / 8, relayChain[0], LocalRouter.CONTROL_CODE).writeByte(PacketHeaders.FOUND_CUT).writeShort(relayChain[1]).send();
 			}
 		});
 	}
 
-	protected ClientSession getClientSession() {
+	public ClientSession getClientSession() {
 		return session;
 	}
 
 	protected void setRemoteCode(short nodeCode) {
 		if (isNodeCodeSet)
-			throw new IllegalStateException("Invalid remote node code.");
+			throw new IllegalStateException("Invalid remote node code " + nodeCode + " (to replace " + getRemoteCode() + ")");
 
 		itsNodeCode = nodeCode;
 		isNodeCodeSet = true;
@@ -60,7 +61,7 @@ public class RemoteNode {
 
 	public short getRemoteCode() {
 		if (!isNodeCodeSet)
-			throw new IllegalStateException("Invalid remote node code.");
+			throw new IllegalStateException("Invalid remote node code null");
 
 		return itsNodeCode;
 	}
@@ -85,25 +86,25 @@ public class RemoteNode {
 		return false;
 	}
 
-	public void sendInitPacket() {
+	public void onConnected(Map<String, Object> properties) {
 		// no-op. we don't need to identify ourself to an external service
 	}
 
-	public ClientSession getNextNode() {
-		assert parentModel.getLocalType() != ClientType.CENTRAL_RELAY;
+	public RemoteNode getNextNode() {
+		assert getLocalNode().getLocalType() != ClientType.CENTRAL_RELAY : getLocalNode().getLocalType();
 
-		// for terminus sessions, previous node is just our connection to central relay
-		switch (parentModel.getLocalType()) {
+		// for terminus sessions, next node is just our connection to central relay
+		switch (getLocalNode().getLocalType()) {
 			case ENTRY_NODE:
-				return parentModel.getDownstream(ClientType.CENTRAL_RELAY_NODE_CODE);
+				return getLocalNode().getDownstream(ClientType.CENTRAL_RELAY_NODE_CODE);
 			case EXIT_NODE:
-				return parentModel.getUpstream(ClientType.CENTRAL_RELAY_NODE_CODE);
+				return getLocalNode().getUpstream(ClientType.CENTRAL_RELAY_NODE_CODE);
 			default:
-				throw new UnsupportedOperationException("Invalid client type");
+				throw new IllegalStateException("Invalid client type " + getLocalNode().getLocalType());
 		}
 	}
 
-	public void processControlPacket(ByteBuffer readBuffer) {
+	public void processControlPacket(PacketParser packet) {
 		throw new UnsupportedOperationException("RemoteNode does not accept control packets");
 	}
 

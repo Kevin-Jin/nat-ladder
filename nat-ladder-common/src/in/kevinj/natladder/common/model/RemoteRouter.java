@@ -1,8 +1,8 @@
 package in.kevinj.natladder.common.model;
 
-import in.kevinj.natladder.common.netimpl.ClientSession;
+import in.kevinj.natladder.common.util.PacketParser;
 
-import java.nio.ByteBuffer;
+import java.util.Map;
 
 public class RemoteRouter extends RemoteNode {
 	public static final RemoteNodeFactory internalNodeFactory = new RemoteNodeFactory() {
@@ -44,8 +44,8 @@ public class RemoteRouter extends RemoteNode {
 	}
 
 	private void setSessionType(SessionType sessionType) {
-		if (this.sessionType != null)
-			throw new IllegalStateException("Invalid session type");
+		if (getSessionType() != null || sessionType == SessionType.TERMINUS || sessionType == null)
+			throw new IllegalStateException("Invalid session type " + sessionType + " (to replace " + getSessionType() + ")");
 
 		this.sessionType = sessionType;
 	}
@@ -66,14 +66,14 @@ public class RemoteRouter extends RemoteNode {
 	}
 
 	@Override
-	public void sendInitPacket() {
+	public void onConnected(Map<String, Object> properties) {
 		assert (getLocalNode().getLocalType() == ClientType.CENTRAL_RELAY) == (sessionType == null);
 		if (sessionType != null)
 			getClientSession().send(new byte[] { PacketHeaders.IDENTIFY, sessionType.invert().byteValue() }, LocalRouter.CONTROL_CODE);
 	}
 
 	@Override
-	public ClientSession getNextNode() {
+	public RemoteNode getNextNode() {
 		if (getSessionType() == null)
 			throw new IllegalStateException("Received forward request before IDENTIFY");
 
@@ -83,25 +83,44 @@ public class RemoteRouter extends RemoteNode {
 			case DOWNWARDS_RELAY:
 				return getLocalNode().getUpstream(thisMessageDest);
 			default:
-				throw new IllegalStateException("Invalid session type");
+				throw new IllegalStateException("Invalid session type " + getSessionType());
 		}
 	}
 
+	private void processIdentify(PacketParser packet) {
+		assert getLocalNode().getLocalType() == ClientType.CENTRAL_RELAY : getLocalNode().getLocalType();
+
+		// received by central relay after entry/exit node connects
+		setSessionType(SessionType.valueOf(packet.readByte()));
+		setRemoteCode(getLocalNode().registerNode(this));
+		getClientSession().packetBuilder(Byte.SIZE / 8 + Short.SIZE / 8, LocalRouter.CONTROL_CODE).writeByte(PacketHeaders.ACCEPTED).writeShort(getRemoteCode()).send();
+	}
+
+	private void processAccepted(PacketParser packet) {
+		assert getLocalNode().getLocalType() != ClientType.CENTRAL_RELAY : getLocalNode().getLocalType();
+
+		// received by entry/exit node after connecting to central relay
+		setRemoteCode(ClientType.CENTRAL_RELAY_NODE_CODE);
+		getLocalNode().registerNode(this);
+		getLocalNode().setLocalCode(packet.readShort());
+	}
+
+	private void processFoundCut(PacketParser packet) {
+		assert getLocalNode().getLocalType() != ClientType.CENTRAL_RELAY : getLocalNode().getLocalType();
+
+		getLocalNode().removeFromRelayTable(getRemoteCode(), packet.readShort());
+	}
+
 	@Override
-	public void processControlPacket(ByteBuffer readBuffer) {
+	public void processControlPacket(PacketParser packet) {
 		try {
-			switch (readBuffer.get()) {
+			byte op = packet.readByte();
+			switch (op) {
 				case PacketHeaders.IDENTIFY:
-					// received by central relay after entry/exit node connects
-					setSessionType(SessionType.valueOf(readBuffer.get()));
-					setRemoteCode(getLocalNode().registerNode(this));
-					getClientSession().packetBuilder(Byte.SIZE / 8 + Short.SIZE / 8, LocalRouter.CONTROL_CODE).writeByte(PacketHeaders.ACCEPTED).writeShort(getRemoteCode()).send();
+					processIdentify(packet);
 					break;
 				case PacketHeaders.ACCEPTED:
-					// received by entry/exit node after connecting to central relay
-					setRemoteCode(ClientType.CENTRAL_RELAY_NODE_CODE);
-					getLocalNode().registerNode(this);
-					getLocalNode().setLocalCode(readBuffer.getShort());
+					processAccepted(packet);
 					break;
 				case PacketHeaders.PING:
 					getClientSession().send(new byte[] { PacketHeaders.PONG }, LocalRouter.CONTROL_CODE);
@@ -110,12 +129,13 @@ public class RemoteRouter extends RemoteNode {
 					getClientSession().receivedPong();
 					break;
 				case PacketHeaders.FOUND_CUT:
-					assert getLocalNode().getLocalType() != ClientType.CENTRAL_RELAY;
-					getLocalNode().removeFromRelayTable(getRemoteCode(), readBuffer.getShort());
+					processFoundCut(packet);
 					break;
+				default:
+					throw new IllegalStateException("Invalid operation " + op);
 			}
 		} finally {
-			getLocalNode().getBufferCache().tryReturnBuffer(readBuffer);
+			packet.dispose();
 		}
 	}
 
