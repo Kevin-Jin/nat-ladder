@@ -72,9 +72,6 @@ public abstract class LocalRouter {
 		return localType;
 	}
 
-	public abstract short[] getRelayChain(short fromCode);
-	public abstract void removeFromRelayTable(short... relayChain);
-
 	// TODO: not type-safe and a code smell. replace functionality with polymorphism somehow.
 	public boolean setProperty(String prop, Object value) {
 		return properties.put(prop, value) != null;

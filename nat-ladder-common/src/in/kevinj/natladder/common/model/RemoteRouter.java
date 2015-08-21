@@ -2,6 +2,8 @@ package in.kevinj.natladder.common.model;
 
 import in.kevinj.natladder.common.util.PacketParser;
 
+import java.util.Collection;
+import java.util.Collections;
 import java.util.Map;
 
 public class RemoteRouter extends RemoteNode {
@@ -67,9 +69,37 @@ public class RemoteRouter extends RemoteNode {
 
 	@Override
 	public void onConnected(Map<String, Object> properties) {
-		assert (getLocalNode().getLocalType() == ClientType.CENTRAL_RELAY) == (sessionType == null);
-		if (sessionType != null)
-			getClientSession().send(new byte[] { PacketHeaders.IDENTIFY, sessionType.invert().byteValue() }, LocalRouter.CONTROL_CODE);
+		if (getSessionType() != null) {
+			assert getLocalNode().getLocalType() != ClientType.CENTRAL_RELAY : getLocalNode().getLocalType();
+
+			switch (getSessionType()) {
+				case DOWNWARDS_RELAY:
+					// notify central relay that we are an ENTRY_NODE
+					getClientSession().packetBuilder(LocalRouter.CONTROL_CODE)
+						.writeByte(PacketHeaders.IDENTIFY)
+						// relative to central relay, entry nodes are upstream
+						.writeByte(getSessionType().invert().byteValue())
+						.writeString((String) properties.get("identifer"))
+						.writeString((String) properties.get("password"))
+					.send();
+					break;
+				case UPWARDS_RELAY:
+					// notify central relay that we are an EXIT_NODE
+					getClientSession().packetBuilder(LocalRouter.CONTROL_CODE)
+						.writeByte(PacketHeaders.IDENTIFY)
+						// relative to central relay, exit nodes are downstream
+						.writeByte(getSessionType().invert().byteValue())
+						.writeString((String) properties.get("identifer"))
+						.writeString((String) properties.get("password"))
+						.writeInt(((Integer) properties.get("connectToPort")).intValue())
+					.send();
+					break;
+				default:
+					throw new IllegalStateException("Invalid session type " + getSessionType());
+			}
+		} else {
+			assert getLocalNode().getLocalType() == ClientType.CENTRAL_RELAY : getLocalNode().getLocalType();
+		}
 	}
 
 	@Override
@@ -90,25 +120,204 @@ public class RemoteRouter extends RemoteNode {
 	private void processIdentify(PacketParser packet) {
 		assert getLocalNode().getLocalType() == ClientType.CENTRAL_RELAY : getLocalNode().getLocalType();
 
-		// received by central relay after entry/exit node connects
 		setSessionType(SessionType.valueOf(packet.readByte()));
-		setRemoteCode(getLocalNode().registerNode(this));
-		getClientSession().packetBuilder(Byte.SIZE / 8 + Short.SIZE / 8, LocalRouter.CONTROL_CODE).writeByte(PacketHeaders.ACCEPTED).writeShort(getRemoteCode()).send();
+		switch (getSessionType()) {
+			case UPWARDS_RELAY: {
+				// ENTRY_NODE connected
+				String identifier = packet.readString().toLowerCase();
+				String password = packet.readString();
+				// find the connected exit node that maps to the given identifier
+				ExitNodeInfo matched = (ExitNodeInfo) getLocalNode().getProperty("EXITNAME_" + identifier);
+				if (matched == null) {
+					// identifier did not map to any connected exit node
+					getClientSession().send(new byte[] {
+						PacketHeaders.REJECTED,
+						PacketHeaders.REJECTED_REASON_ID_NOT_IN_USE
+					}, LocalRouter.CONTROL_CODE);
+				} else if (!matched.password.equals(password)) {
+					// password did not match to exit node's provided password
+					getClientSession().send(new byte[] {
+						PacketHeaders.REJECTED,
+						PacketHeaders.REJECTED_REASON_WRONG_PASSWORD
+					}, LocalRouter.CONTROL_CODE);
+				} else {
+					setRemoteCode(getLocalNode().registerNode(this));
+					// internally keep track of which exit node is connected to each entry node
+					// in case entry node disconnects and we need to notify the exit node who cares.
+					getLocalNode().setProperty("ENTRY_" + getRemoteCode(), new EntryNodeInfo(identifier, matched.nodeCode));
+					// internally keep track of which entry nodes are connected to each exit node
+					// in case exit node disconnects and we need to notify the entry nodes who care.
+					matched.connectedEntryNodes.add(Short.valueOf(getRemoteCode()));
+					getClientSession().packetBuilder(Byte.SIZE / 8 + Short.SIZE / 8 * 2 + Integer.SIZE / 8, LocalRouter.CONTROL_CODE)
+						.writeByte(PacketHeaders.ACCEPTED)
+						.writeShort(getRemoteCode())		// give entry node their unique code that central relay just generated
+						.writeInt(matched.connectToPort)	// entry node will listen on the same port that exit node connects to locally
+						.writeShort(matched.nodeCode)		// give entry node the exit node's unique code for their relay table
+					.send();
+				}
+				break;
+			}
+			case DOWNWARDS_RELAY: {
+				// EXIT_NODE connected
+				String identifier = packet.readString().toLowerCase();
+				String password = packet.readString();
+				int connectToPort = packet.readInt();
+				if (getLocalNode().getProperty("EXITNAME_" + identifier) != null) {
+					getClientSession().send(new byte[] {
+						PacketHeaders.REJECTED,
+						PacketHeaders.REJECTED_REASON_ID_IN_USE
+					}, LocalRouter.CONTROL_CODE);
+				} else {
+					setRemoteCode(getLocalNode().registerNode(this));
+					ExitNodeInfo info = new ExitNodeInfo(identifier, password, connectToPort, getRemoteCode());
+					getLocalNode().setProperty("EXITNAME_" + identifier, info);
+					getLocalNode().setProperty("EXIT_" + getRemoteCode(), info);
+					getClientSession().packetBuilder(Byte.SIZE / 8 + Short.SIZE / 8, LocalRouter.CONTROL_CODE)
+						.writeByte(PacketHeaders.ACCEPTED)
+						.writeShort(getRemoteCode())
+					.send();
+				}
+				break;
+			}
+			default:
+				throw new IllegalStateException("Invalid session type " + getSessionType());
+		} 
 	}
 
 	private void processAccepted(PacketParser packet) {
 		assert getLocalNode().getLocalType() != ClientType.CENTRAL_RELAY : getLocalNode().getLocalType();
 
-		// received by entry/exit node after connecting to central relay
 		setRemoteCode(ClientType.CENTRAL_RELAY_NODE_CODE);
 		getLocalNode().registerNode(this);
 		getLocalNode().setLocalCode(packet.readShort());
+		switch (getLocalNode().getLocalType()) {
+			case ENTRY_NODE: {
+				int portNumber = packet.readInt();
+				short exitNodeCode = packet.readShort();
+				getLocalNode().getClientManager().listen(externalNodeFactory,
+					portNumber,
+					Collections.<String, Object>singletonMap("exitNodeCode", Short.valueOf(exitNodeCode))
+				);
+				break;
+			}
+			case EXIT_NODE:
+				// no-op
+				break;
+			default:
+				throw new IllegalStateException("Invalid client type " + getLocalNode().getLocalType());
+		}
+	}
+
+	private void processRejected(PacketParser packet) {
+		assert getLocalNode().getLocalType() != ClientType.CENTRAL_RELAY : getLocalNode().getLocalType();
+
+		byte rejectedReason = packet.readByte();
+		switch (rejectedReason) {
+			case PacketHeaders.REJECTED_REASON_ID_IN_USE:
+				assert getLocalNode().getLocalType() == ClientType.EXIT_NODE : getLocalNode().getLocalType();
+
+				// FIXME: implement command line interaction telling user to re-enter
+				// identifier and password to register with
+				break;
+			case PacketHeaders.REJECTED_REASON_ID_NOT_IN_USE:
+			case PacketHeaders.REJECTED_REASON_WRONG_PASSWORD:
+				assert getLocalNode().getLocalType() == ClientType.ENTRY_NODE : getLocalNode().getLocalType();
+
+				// FIXME: implement command line interaction telling user to re-enter
+				// identifier and password to login with
+				break;
+			default:
+				throw new IllegalStateException("Invalid rejected reason " + rejectedReason);
+		}
 	}
 
 	private void processFoundCut(PacketParser packet) {
 		assert getLocalNode().getLocalType() != ClientType.CENTRAL_RELAY : getLocalNode().getLocalType();
 
-		getLocalNode().removeFromRelayTable(getRemoteCode(), packet.readShort());
+		byte foundCutType = packet.readByte();
+		switch (foundCutType) {
+			case PacketHeaders.FOUND_CUT_TERMINUS: {
+				short ourTerminus = packet.readShort();
+				short[] relayChain = (short[]) getLocalNode().removeProperty("RELAYCHAIN_" + ourTerminus); 
+				if (relayChain == null)
+					throw new IllegalStateException("Cut a non-existent connection (node code: " + ourTerminus + ")");
+	
+				switch (getSessionType()) {
+					case UPWARDS_RELAY: {
+						assert getLocalNode().getLocalType() == ClientType.EXIT_NODE : getLocalNode().getLocalType();
+
+						RemoteNode externalConn = getLocalNode().getDownstream(ourTerminus);
+						if (externalConn != null)
+							externalConn.getClientSession().close("Lost connection on source node");
+						else
+							throw new IllegalStateException("Cut a non-existent connection (node code: " + ourTerminus + ")");
+						break;
+					}
+					case DOWNWARDS_RELAY: {
+						assert getLocalNode().getLocalType() == ClientType.ENTRY_NODE : getLocalNode().getLocalType();
+
+						RemoteNode externalConn = getLocalNode().getUpstream(ourTerminus);
+						if (externalConn != null)
+							externalConn.getClientSession().close("Lost connection on source node");
+						else
+							throw new IllegalStateException("Cut a non-existent connection (node code: " + ourTerminus + ")");
+						break;
+					}
+					default:
+						throw new IllegalStateException("Invalid session type " + getSessionType());
+				}
+				break;
+			}
+			case PacketHeaders.FOUND_CUT_NODE: {
+				short otherNode = packet.readShort();
+				switch (getSessionType()) {
+					case UPWARDS_RELAY:
+						assert getLocalNode().getLocalType() == ClientType.EXIT_NODE : getLocalNode().getLocalType();
+
+						// cut terminus connections that relay through the provided entry node
+						Collection<?> ourTermini = (Collection<?>) getLocalNode().removeProperty("REVERSE_" + otherNode);
+						if (ourTermini == null)
+							throw new IllegalStateException("Cut a non-existent connection (node code: " + otherNode + ")");
+
+						for (Object ourTerminus : ourTermini)
+							getLocalNode().getDownstream((Short) ourTerminus).getClientSession().close("Lost connection to entry node");
+						break;
+					case DOWNWARDS_RELAY:
+						assert getLocalNode().getLocalType() == ClientType.ENTRY_NODE : getLocalNode().getLocalType();
+
+						// lost connection to exit node. just shut ourselves down.
+						getLocalNode().getClientManager().close("Lost connection to exit node", null);
+						break;
+					default:
+						throw new IllegalStateException("Invalid session type " + getSessionType());
+				}
+				break;
+			}
+			default:
+				throw new IllegalStateException("Invalid found cut type " + foundCutType);
+		}
+	}
+
+	private void processNewPipe(PacketParser packet) {
+		assert getLocalNode().getLocalType() == ClientType.EXIT_NODE : getLocalNode().getLocalType();
+
+		short entryNodeCode = packet.readShort();
+		short terminusCode = packet.readShort();
+		getLocalNode().getClientManager().connect(externalNodeFactory,
+			(String) getLocalNode().getProperty("externalHost"),
+			((Integer) getLocalNode().getProperty("externalPort")).intValue(),
+			Collections.<String, Object>singletonMap("entryNodeRelayChain", new short[] { entryNodeCode, terminusCode })
+		);
+	}
+
+	private void processPipeMade(PacketParser packet) {
+		assert getLocalNode().getLocalType() == ClientType.ENTRY_NODE : getLocalNode().getLocalType();
+
+		short ourTerminus = packet.readShort();
+		short exitNodeCode = packet.readShort();
+		short terminusCode = packet.readShort();
+		// set our relay chain
+		getLocalNode().setProperty("RELAYCHAIN_" + ourTerminus, new short[] { exitNodeCode, terminusCode });
 	}
 
 	@Override
@@ -122,6 +331,9 @@ public class RemoteRouter extends RemoteNode {
 				case PacketHeaders.ACCEPTED:
 					processAccepted(packet);
 					break;
+				case PacketHeaders.REJECTED:
+					processRejected(packet);
+					break;
 				case PacketHeaders.PING:
 					getClientSession().send(new byte[] { PacketHeaders.PONG }, LocalRouter.CONTROL_CODE);
 					break;
@@ -130,6 +342,12 @@ public class RemoteRouter extends RemoteNode {
 					break;
 				case PacketHeaders.FOUND_CUT:
 					processFoundCut(packet);
+					break;
+				case PacketHeaders.NEW_PIPE:
+					processNewPipe(packet);
+					break;
+				case PacketHeaders.PIPE_MADE:
+					processPipeMade(packet);
 					break;
 				default:
 					throw new IllegalStateException("Invalid operation " + op);
@@ -140,7 +358,25 @@ public class RemoteRouter extends RemoteNode {
 	}
 
 	@Override
-	public void cutLinkFound() {
-		getLocalNode().removeFromRelayTable(getRemoteCode());
+	public void foundNextNodeCut() {
+		assert getSessionType() != SessionType.TERMINUS : getSessionType();
+
+		// next node (NOT us) was found to be unreachable
+		switch (getLocalNode().getLocalType()) {
+			case ENTRY_NODE:
+			case EXIT_NODE:
+				// terminus disconnected. send message through central relay to notify opposite end.
+				notifyFoundCutExternal(thisMessageDest);
+				// just in case... deregister TERMINUS
+				getLocalNode().deregisterNode(SessionType.TERMINUS, thisMessageDest);
+				break;
+			case CENTRAL_RELAY:
+				// if we're an UPWARDS_RELAY, then the disconnected next node is a DOWNWARDS_RELAY
+				// if we're a DOWNWARDS_RELAY, then the disconnected next node is an UPWARDS_RELAY
+				disposeOnCentralRelay(getLocalNode(), getSessionType().invert(), thisMessageDest);
+				break;
+			default:
+				throw new IllegalStateException("Invalid client type " + getLocalNode().getLocalType());
+		}
 	}
 }

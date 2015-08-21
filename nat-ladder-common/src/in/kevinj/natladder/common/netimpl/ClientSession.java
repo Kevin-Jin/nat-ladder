@@ -181,7 +181,7 @@ public abstract class ClientSession {
 			int recvPktRemaining = readBufferOverflow + readBuffer.remaining();
 			RemoteNode nextNode = model.getNextNode();
 			if (nextNode == null) {
-				model.cutLinkFound();
+				model.foundNextNodeCut();
 				model.getLocalNode().getBufferCache().tryReturnBuffer(readBuffer);
 			} else {
 				nextNode.getClientSession().writeMessage(readBuffer);
@@ -215,11 +215,11 @@ public abstract class ClientSession {
 			return false;
 
 		// received message to be forwarded
-		short[] relayChain = model.getLocalNode().getRelayChain(model.getRemoteCode());
+		short[] relayChain = (short[]) model.getLocalNode().getProperty("RELAYCHAIN_" + model.getRemoteCode());
 		int recvPktRemaining = readBuffer.remaining();
 		RemoteNode nextNode = model.getNextNode();
 		if (nextNode == null) {
-			model.cutLinkFound();
+			model.foundNextNodeCut();
 			model.getLocalNode().getBufferCache().tryReturnBuffer(readBuffer);
 		} else {
 			// must first prefix packet with received packet length and the relay chain.
