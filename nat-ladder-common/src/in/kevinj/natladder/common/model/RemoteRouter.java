@@ -5,12 +5,18 @@ import in.kevinj.natladder.common.util.PacketParser;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Map;
+import java.util.logging.Level;
 
 public class RemoteRouter extends RemoteNode {
 	public static final RemoteNodeFactory internalNodeFactory = new RemoteNodeFactory() {
 		@Override
 		public RemoteNode make(LocalRouter parentModel) {
 			return new RemoteRouter(parentModel);
+		}
+
+		@Override
+		public SessionType typeToMake() {
+			return null;
 		}
 	};
 
@@ -19,12 +25,22 @@ public class RemoteRouter extends RemoteNode {
 		public RemoteNode make(LocalRouter parentModel) {
 			return new RemoteRouter(parentModel, SessionType.UPWARDS_RELAY);
 		}
+
+		@Override
+		public SessionType typeToMake() {
+			return SessionType.UPWARDS_RELAY;
+		}
 	};
 
 	public static final RemoteNodeFactory downwardsRelayFactory = new RemoteNodeFactory() {
 		@Override
 		public RemoteNode make(LocalRouter parentModel) {
 			return new RemoteRouter(parentModel, SessionType.DOWNWARDS_RELAY);
+		}
+
+		@Override
+		public SessionType typeToMake() {
+			return SessionType.DOWNWARDS_RELAY;
 		}
 	};
 
@@ -43,6 +59,34 @@ public class RemoteRouter extends RemoteNode {
 	@Override
 	public SessionType getSessionType() {
 		return sessionType;
+	}
+
+	@Override
+	protected ClientType getRemoteType() {
+		SessionType link = getSessionType();
+		ClientType us = getLocalNode().getLocalType();
+		switch (us) {
+			case CENTRAL_RELAY:
+				switch (link) {
+					case DOWNWARDS_RELAY:
+						return ClientType.EXIT_NODE;
+					case UPWARDS_RELAY:
+						return ClientType.ENTRY_NODE;
+					default:
+						throw new IllegalStateException("Invalid session type " + link);
+				}
+			case EXIT_NODE:
+			case ENTRY_NODE:
+				if (link == SessionType.DOWNWARDS_RELAY && us == ClientType.ENTRY_NODE
+						|| link == SessionType.UPWARDS_RELAY && us == ClientType.EXIT_NODE)
+					return ClientType.CENTRAL_RELAY;
+				if (link == SessionType.DOWNWARDS_RELAY && us == ClientType.EXIT_NODE
+						|| link == SessionType.UPWARDS_RELAY && us == ClientType.ENTRY_NODE)
+					return null;
+				throw new IllegalStateException("Invalid session type " + link + " and client type " + us);
+			default:
+				throw new IllegalStateException("Invalid client type " + us);
+		}
 	}
 
 	private void setSessionType(SessionType sessionType) {
@@ -102,19 +146,23 @@ public class RemoteRouter extends RemoteNode {
 		}
 	}
 
-	@Override
-	public RemoteNode getNextNode() {
+	private RemoteNode getNextNode(short nodeCode) {
 		if (getSessionType() == null)
 			throw new IllegalStateException("Received forward request before IDENTIFY");
 
 		switch (getSessionType()) {
 			case UPWARDS_RELAY:
-				return getLocalNode().getDownstream(thisMessageDest);
+				return getLocalNode().getDownstream(nodeCode);
 			case DOWNWARDS_RELAY:
-				return getLocalNode().getUpstream(thisMessageDest);
+				return getLocalNode().getUpstream(nodeCode);
 			default:
 				throw new IllegalStateException("Invalid session type " + getSessionType());
 		}
+	}
+
+	@Override
+	public RemoteNode getNextNode() {
+		return getNextNode(thisMessageDest);
 	}
 
 	private void processIdentify(PacketParser packet) {
@@ -154,6 +202,7 @@ public class RemoteRouter extends RemoteNode {
 						.writeInt(matched.connectToPort)	// entry node will listen on the same port that exit node connects to locally
 						.writeShort(matched.nodeCode)		// give entry node the exit node's unique code for their relay table
 					.send();
+					LOG.log(Level.INFO, "Connection with {0} ({1}) at {2} linking with {3}", new Object[] { getRemoteTypeString(), getRemoteCode(), getClientSession().getAddress(), identifier });
 				}
 				break;
 			}
@@ -176,12 +225,13 @@ public class RemoteRouter extends RemoteNode {
 						.writeByte(PacketHeaders.ACCEPTED)
 						.writeShort(getRemoteCode())
 					.send();
+					LOG.log(Level.INFO, "Connection with {0} ({1}) at {2} registering as {3}", new Object[] { getRemoteTypeString(), getRemoteCode(), getClientSession().getAddress(), identifier });
 				}
 				break;
 			}
 			default:
 				throw new IllegalStateException("Invalid session type " + getSessionType());
-		} 
+		}
 	}
 
 	private void processAccepted(PacketParser packet) {
@@ -206,6 +256,7 @@ public class RemoteRouter extends RemoteNode {
 			default:
 				throw new IllegalStateException("Invalid client type " + getLocalNode().getLocalType());
 		}
+		LOG.log(Level.INFO, "Connection with {0} ({1}) at {2} established", new Object[] { getRemoteTypeString(), getRemoteCode(), getClientSession().getAddress() });
 	}
 
 	private void processRejected(PacketParser packet) {
@@ -218,6 +269,7 @@ public class RemoteRouter extends RemoteNode {
 
 				// FIXME: implement command line interaction telling user to re-enter
 				// identifier and password to register with
+				LOG.log(Level.INFO, "Connection with {0} at {1} rejected: identifier in use", new Object[] { getRemoteTypeString(), getClientSession().getAddress() });
 				break;
 			case PacketHeaders.REJECTED_REASON_ID_NOT_IN_USE:
 			case PacketHeaders.REJECTED_REASON_WRONG_PASSWORD:
@@ -225,6 +277,7 @@ public class RemoteRouter extends RemoteNode {
 
 				// FIXME: implement command line interaction telling user to re-enter
 				// identifier and password to login with
+				LOG.log(Level.INFO, "Connection with {0} at {1} rejected: identifier or password incorrect", new Object[] { getRemoteTypeString(), getClientSession().getAddress() });
 				break;
 			default:
 				throw new IllegalStateException("Invalid rejected reason " + rejectedReason);
@@ -318,6 +371,8 @@ public class RemoteRouter extends RemoteNode {
 		short terminusCode = packet.readShort();
 		// set our relay chain
 		getLocalNode().setProperty("RELAYCHAIN_" + ourTerminus, new short[] { exitNodeCode, terminusCode });
+		RemoteNode terminus = getNextNode(ourTerminus);
+		LOG.log(Level.INFO, "Connection with {0} at {1} piped through", new Object[] { terminus.getRemoteTypeString(), terminus.getClientSession().getAddress() });
 	}
 
 	@Override

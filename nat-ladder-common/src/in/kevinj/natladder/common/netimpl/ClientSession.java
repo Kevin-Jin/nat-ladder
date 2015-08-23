@@ -4,6 +4,7 @@ import in.kevinj.natladder.common.model.ClientType;
 import in.kevinj.natladder.common.model.LocalRouter;
 import in.kevinj.natladder.common.model.PacketHeaders;
 import in.kevinj.natladder.common.model.RemoteNode;
+import in.kevinj.natladder.common.model.SessionType;
 import in.kevinj.natladder.common.util.PacketBuilder;
 import in.kevinj.natladder.common.util.PacketParser;
 
@@ -19,7 +20,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 public abstract class ClientSession {
-	private static final Logger LOG = Logger.getLogger(ClientSession.class.getName());
+	protected static final Logger LOG = Logger.getLogger(ClientSession.class.getName());
 
 	private static final int HEADER_LENGTH = Integer.SIZE / 8 + Short.SIZE / 8;
 	private static final int IDLE_TIME = 60000; //in milliseconds
@@ -95,8 +96,6 @@ public abstract class ClientSession {
 			};
 			idleTaskFuture = model.getLocalNode().getWheelTimer().schedule(idleTask, IDLE_TIME, TimeUnit.MILLISECONDS);
 		}
-
-		LOG.log(Level.FINE, "Established connection with {0}", getAddress());
 	}
 
 	protected RemoteNode getModel() {
@@ -216,6 +215,9 @@ public abstract class ClientSession {
 
 		// received message to be forwarded
 		short[] relayChain = (short[]) model.getLocalNode().getProperty("RELAYCHAIN_" + model.getRemoteCode());
+		if (relayChain == null)
+			throw new IllegalStateException("No pipe to exit node for " + SessionType.TERMINUS + " " + model.getRemoteCode());
+
 		int recvPktRemaining = readBuffer.remaining();
 		RemoteNode nextNode = model.getNextNode();
 		if (nextNode == null) {
@@ -284,10 +286,21 @@ public abstract class ClientSession {
 		writeMessage(buf);
 	}
 
-	public PacketBuilder packetBuilder(int initialMessageLength, short... destinationChain) {
-		return new PacketBuilder(destinationChain, initialMessageLength) {
+	public PacketBuilder packetBuilder(int initialMessageLength, final short... destinationChain) {
+		final int prefixLen = Integer.SIZE / 8 + Short.SIZE / 8 * destinationChain.length;
+		return new PacketBuilder(prefixLen + initialMessageLength) {
+			@Override
+			protected void initialize(ByteBuffer buf) {
+				// reserve space for length
+				buf.position(Integer.SIZE / 8);
+				for (int i = 0; i < destinationChain.length; i++)
+					buf.putShort(destinationChain[i]);
+			}
+
 			@Override
 			protected void commit(ByteBuffer buf) {
+				// fill in length
+				buf.putInt(0, buf.position() - prefixLen);
 				writeMessage(buf);
 			}
 		};

@@ -11,6 +11,7 @@ import java.nio.channels.Channel;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.SocketChannel;
 import java.util.Iterator;
+import java.util.logging.Level;
 
 public class ClientSessionNio extends ClientSession {
 	private final SocketChannel commChn;
@@ -22,6 +23,8 @@ public class ClientSessionNio extends ClientSession {
 		commChn = channel;
 		selectionKey = acceptedKey;
 		sendQueue = new UnorderedQueue();
+
+		LOG.log(Level.FINE, "Established connection with {0}", getAddress());
 	}
 
 	@Override

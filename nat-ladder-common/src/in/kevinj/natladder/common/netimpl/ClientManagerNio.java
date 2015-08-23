@@ -1,9 +1,12 @@
 package in.kevinj.natladder.common.netimpl;
 
+import in.kevinj.natladder.common.model.ClientType;
 import in.kevinj.natladder.common.model.LocalRouter;
 import in.kevinj.natladder.common.model.RemoteNode;
+import in.kevinj.natladder.common.model.SessionType;
 
 import java.io.IOException;
+import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.channels.CancelledKeyException;
@@ -76,7 +79,7 @@ public class ClientManagerNio implements ClientManager {
 			newConnectionProps.put(key, properties != null ? properties : Collections.<String, Object>emptyMap());
 		}
 
-		private void registerNewClient(SocketChannel client, final Map<SelectionKey, ClientSessionNio> connected, RemoteNode.RemoteNodeFactory clientMaker, Map<String, Object> properties) {
+		private ClientSessionNio registerNewClient(SocketChannel client, final Map<SelectionKey, ClientSessionNio> connected, RemoteNode.RemoteNodeFactory clientMaker, Map<String, Object> properties) {
 			try {
 				client.socket().setTcpNoDelay(true);
 				client.configureBlocking(false);
@@ -92,9 +95,11 @@ public class ClientManagerNio implements ClientManager {
 				connected.put(acceptedKey, session);
 
 				clientState.onConnected(properties);
+				return session;
 			} catch (IOException ex) {
 				//does an IOException in accept or connect always mean an invalid server channel?
 				close(ex.getMessage(), ex);
+				return null;
 			}
 		}
 
@@ -117,7 +122,7 @@ public class ClientManagerNio implements ClientManager {
 				key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);					
 		}
 
-		private void cleanupAll(Map<SelectionKey, ClientSessionNio> connected) throws IOException {
+		private void cleanupAll(Map<SelectionKey, ClientSessionNio> connected) {
 			for (Iterator<Map.Entry<SelectionKey, ClientSessionNio>> iter = connected.entrySet().iterator(); iter.hasNext(); ) {
 				Map.Entry<SelectionKey, ClientSessionNio> item = iter.next();
 				iter.remove();
@@ -128,21 +133,29 @@ public class ClientManagerNio implements ClientManager {
 				Map.Entry<SelectionKey, SocketChannel> item = iter.next();
 				iter.remove();
 				item.getKey().cancel();
-				item.getValue().close();
+				try {
+					item.getValue().close();
+				} catch (IOException ex) {
+					LOG.log(Level.WARNING, "Error while terminating pending connection at " + item.getValue().socket().getRemoteSocketAddress(), ex);
+				}
 			}
 			for (Iterator<Map.Entry<SelectionKey, ServerSocketChannel>> iter = listeners.entrySet().iterator(); iter.hasNext(); ) {
 				Map.Entry<SelectionKey, ServerSocketChannel> item = iter.next();
 				iter.remove();
 				item.getKey().cancel();
-				item.getValue().close();
+				try {
+					item.getValue().close();
+				} catch (IOException ex) {
+					LOG.log(Level.WARNING, "Error while terminating listener at " + item.getValue().socket().getLocalSocketAddress(), ex);
+				}
 			}
 		}
 
 		@Override
 		public void run() {
+			// allows type safety, unlike SelectionKey.attach()
+			Map<SelectionKey, ClientSessionNio> connected = new ConcurrentHashMap<SelectionKey, ClientSessionNio>();
 			try {
-				// allows type safe, unlike SelectionKey.attach()
-				Map<SelectionKey, ClientSessionNio> connected = new ConcurrentHashMap<SelectionKey, ClientSessionNio>();
 				while (selector.isOpen()) {
 					selector.select();
 					Set<SelectionKey> keys = selector.selectedKeys();
@@ -152,18 +165,18 @@ public class ClientManagerNio implements ClientManager {
 						keyIter.remove();
 
 						ServerSocketChannel listener;
-						SocketChannel client;
+						SocketChannel client = null;
 						Map<String, Object> newConnProps;
-						ClientSessionNio session;
+						ClientSessionNio session = null;
 						try {
 							if (key.isValid() && key.isAcceptable())
 								if ((listener = listeners.get(key)) != null && (newConnProps = newConnectionProps.get(key)) != null)
-									registerNewClient(client = listener.accept(), connected, acceptorClientMaker, newConnProps);
+									session = registerNewClient(client = listener.accept(), connected, acceptorClientMaker, newConnProps);
 								else
 									close("Network event selector was manipulated outside of connect() and listen()", null);
 							if (key.isValid() && key.isConnectable() && (!(client = (SocketChannel) key.channel()).isConnectionPending() || client.finishConnect()))
 								if (pendingConnections.remove(key) == client && (newConnProps = newConnectionProps.get(key)) != null)
-									registerNewClient(client, connected, connectorClientMaker, newConnProps);
+									session = registerNewClient(client, connected, connectorClientMaker, newConnProps);
 								else
 									close("Network event selector was manipulated outside of connect() and listen()", null);
 							if (key.isValid() && key.isReadable())
@@ -178,16 +191,45 @@ public class ClientManagerNio implements ClientManager {
 									close("Network event selector was manipulated outside of connect() and listen()", null);
 						} catch (CancelledKeyException e) {
 							// don't worry about it - session is already closed
+						} catch (ConnectException ex) {
+							SessionType sessionType = listeners.containsKey(key) ? acceptorClientMaker.typeToMake() : pendingConnections.remove(key) != null ? connectorClientMaker.typeToMake() : null;
+							if (sessionType == null)
+								throw new IllegalStateException("Invalid session type " + sessionType);
+
+							switch (model.getLocalType()) {
+								case ENTRY_NODE:
+									close("Failed to establish connection with " + ClientType.CENTRAL_RELAY, ex);
+									break;
+								case EXIT_NODE:
+									switch (sessionType) {
+										case UPWARDS_RELAY:
+											close("Failed to establish connection with " + ClientType.CENTRAL_RELAY, ex);
+											break;
+										case TERMINUS:
+											close("Failed to establish connection with terminus", ex);
+											break;
+										default:
+											throw new IllegalStateException("Invalid session type " + sessionType);
+									}
+									break;
+								default:
+									throw new IllegalStateException("Invalid client type " + model.getLocalType());
+							}
 						} catch (Throwable ex) {
 							// the show must go on. don't let any single iteration spoil our event loop.
-							LOG.log(Level.WARNING, "Uncaught exception while processing packet", ex);
+							if (session != null)
+								LOG.log(Level.WARNING, "Error while processing packet from " + session.getModel().getRemoteTypeString(), ex);
+							else if (client != null && client.socket() != null)
+								LOG.log(Level.WARNING, "Error while processing packet from " + client.socket().getRemoteSocketAddress(), ex);
+							else
+								LOG.log(Level.WARNING, "Error while processing packet", ex);
 						}
 					}
 				}
-				cleanupAll(connected);
 			} catch (IOException ex) {
 				close(ex.getMessage(), ex);
 			}
+			cleanupAll(connected);
 		}
 	}
 
@@ -206,13 +248,14 @@ public class ClientManagerNio implements ClientManager {
 	@Override
 	public void close(String reason, Throwable reasonExc) {
 		if (closeEventsTriggered.compareAndSet(false, true)) {
+			model.dispose();
 			try {
 				selector.close();
 			} catch (IOException ex) {
 				LOG.log(Level.WARNING, "Error while closing network event selector", ex);
 			}
 			if (reasonExc == null)
-				LOG.log(Level.INFO, "Network event selector closed ({1})", reason);
+				LOG.log(Level.INFO, "Network event selector closed ({0})", reason);
 			else
 				LOG.log(Level.INFO, "Network event selector closed (" + reason + ")", reasonExc);
 			eventLoopThreadPool.shutdown();
@@ -236,7 +279,7 @@ public class ClientManagerNio implements ClientManager {
 			eventLoop.addAcceptor(clientMaker, listener, properties);
 			LOG.log(Level.INFO, "Listening on {0}", address);
 		} catch (IOException ex) {
-			LOG.log(Level.SEVERE, "Could not bind on " + address, ex);
+			close("Could not bind on " + address, ex);
 		}
 	}
 
@@ -258,7 +301,7 @@ public class ClientManagerNio implements ClientManager {
 			eventLoop.addConnector(clientMaker, speaker, properties);
 			LOG.log(Level.INFO, "Connecting to {0}", address);
 		} catch (IOException ex) {
-			LOG.log(Level.SEVERE, "Could not connect to " + address, ex);
+			close("Could not connect to " + address, ex);
 		}
 	}
 

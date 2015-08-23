@@ -6,16 +6,15 @@ import java.nio.charset.Charset;
 public abstract class PacketBuilder {
 	private static final Charset utf8 = Charset.forName("UTF-8");
 
-	private final int prefixLen;
 	private ByteBuffer buf;
 
-	public PacketBuilder(short[] destinationChain, int initialMessageLength) {
-		prefixLen = Integer.SIZE / 8 + Short.SIZE / 8 * destinationChain.length;
-		buf = ByteBuffer.allocate(prefixLen + initialMessageLength);
-		// reserve space for length
-		buf.position(Integer.SIZE / 8);
-		for (int i = 0; i < destinationChain.length; i++)
-			buf.putShort(destinationChain[i]);
+	public PacketBuilder(int initialMessageLength) {
+		buf = ByteBuffer.allocate(initialMessageLength);
+		initialize(buf);
+	}
+
+	protected void initialize(ByteBuffer buf) {
+		// no-op
 	}
 
 	private void ensureCapacity(int size) {
@@ -106,8 +105,6 @@ public abstract class PacketBuilder {
 	protected abstract void commit(ByteBuffer buf);
 
 	public void send() {
-		// fill in the length
-		buf.putInt(0, buf.position() - prefixLen);
 		commit(buf);
 	}
 }

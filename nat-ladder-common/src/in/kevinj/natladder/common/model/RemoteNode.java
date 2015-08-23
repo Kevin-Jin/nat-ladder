@@ -4,10 +4,15 @@ import in.kevinj.natladder.common.netimpl.ClientSession;
 import in.kevinj.natladder.common.util.PacketParser;
 
 import java.util.Map;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public class RemoteNode {
+	protected static final Logger LOG = Logger.getLogger(RemoteNode.class.getName());
+
 	public interface RemoteNodeFactory {
 		public RemoteNode make(LocalRouter parentModel);
+		public SessionType typeToMake();
 	}
 
 	public static final RemoteNodeFactory externalNodeFactory = new RemoteNodeFactory() {
@@ -16,6 +21,11 @@ public class RemoteNode {
 			RemoteNode node = new RemoteNode(parentModel);
 			node.setRemoteCode(parentModel.registerNode(node));
 			return node;
+		}
+
+		@Override
+		public SessionType typeToMake() {
+			return SessionType.TERMINUS;
 		}
 	};
 
@@ -95,6 +105,18 @@ public class RemoteNode {
 		return SessionType.TERMINUS;
 	}
 
+	protected ClientType getRemoteType() {
+		return null;
+	}
+
+	public String getRemoteTypeString() {
+		ClientType remoteType = getRemoteType();
+		if (remoteType == null)
+			return getSessionType().toString();
+		else
+			return remoteType.toString();
+	}
+
 	public boolean forwardRaw() {
 		return true;
 	}
@@ -132,6 +154,7 @@ public class RemoteNode {
 					.writeShort(getLocalNode().getLocalCode())
 					.writeShort(getRemoteCode())
 				.send();
+				LOG.log(Level.INFO, "Connection with {0} at {1} piped through", new Object[] { getRemoteTypeString(), getClientSession().getAddress() });
 				break;
 			}
 			default:
@@ -162,7 +185,7 @@ public class RemoteNode {
 
 		// if we're a TERMINUS, then next node must be central relay.
 		// lost connection to the central relay. just shut ourselves down.
-		getLocalNode().getClientManager().close("Lost connection to central relay", null);
+		getLocalNode().getClientManager().close("Lost connection to " + ClientType.CENTRAL_RELAY, null);
 	}
 
 	protected static void disposeOnCentralRelay(LocalRouter localNode, SessionType sessionType, short nodeCode) {
@@ -220,6 +243,7 @@ public class RemoteNode {
 							centralRelay.notifyFoundCutExternal(getRemoteCode());
 						// deregister TERMINUS
 						getLocalNode().deregisterNode(this);
+						LOG.log(Level.INFO, "Connection with {0} at {1} lost", new Object[] { getRemoteTypeString(), getClientSession().getAddress() });
 						break;
 					}
 					case DOWNWARDS_RELAY:
@@ -230,12 +254,17 @@ public class RemoteNode {
 						// 2.) they initiated the disconnection themselves, in which case our
 						// notification will fall on deaf ears that just don't care.
 						getLocalNode().deregisterNode(this);
+						LOG.log(Level.INFO, "Connection with {0} at {1} lost", new Object[] { getRemoteTypeString(), getClientSession().getAddress() });
+
+						// lost connection to the central relay. just shut ourselves down.
+						getLocalNode().getClientManager().close("Lost connection to " + ClientType.CENTRAL_RELAY, null);
 						break;
 				}
 				break;
 			}
 			case CENTRAL_RELAY:
 				disposeOnCentralRelay(getLocalNode(), getSessionType(), getRemoteCode());
+				LOG.log(Level.INFO, "Connection with {0} at {1} lost", new Object[] { getRemoteTypeString(), getClientSession().getAddress() });
 				break;
 			default:
 				throw new IllegalStateException("Invalid client type " + getLocalNode().getLocalType());
