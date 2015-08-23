@@ -123,7 +123,7 @@ public class RemoteRouter extends RemoteNode {
 						.writeByte(PacketHeaders.IDENTIFY)
 						// relative to central relay, entry nodes are upstream
 						.writeByte(getSessionType().invert().byteValue())
-						.writeString((String) properties.get("identifer"))
+						.writeString((String) properties.get("identifier"))
 						.writeString((String) properties.get("password"))
 					.send();
 					break;
@@ -133,7 +133,7 @@ public class RemoteRouter extends RemoteNode {
 						.writeByte(PacketHeaders.IDENTIFY)
 						// relative to central relay, exit nodes are downstream
 						.writeByte(getSessionType().invert().byteValue())
-						.writeString((String) properties.get("identifer"))
+						.writeString((String) properties.get("identifier"))
 						.writeString((String) properties.get("password"))
 						.writeInt(((Integer) properties.get("connectToPort")).intValue())
 					.send();
@@ -357,8 +357,8 @@ public class RemoteRouter extends RemoteNode {
 		short entryNodeCode = packet.readShort();
 		short terminusCode = packet.readShort();
 		getLocalNode().getClientManager().connect(externalNodeFactory,
-			(String) getLocalNode().getProperty("externalHost"),
-			((Integer) getLocalNode().getProperty("externalPort")).intValue(),
+			(String) getLocalNode().getProperty("terminusHost"),
+			((Integer) getLocalNode().getProperty("terminusPort")).intValue(),
 			Collections.<String, Object>singletonMap("entryNodeRelayChain", new short[] { entryNodeCode, terminusCode })
 		);
 	}

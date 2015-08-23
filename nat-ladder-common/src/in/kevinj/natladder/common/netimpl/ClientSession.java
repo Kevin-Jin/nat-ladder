@@ -68,6 +68,8 @@ public abstract class ClientSession {
 	private int readBufferOverflow;
 	private MessageType nextMessageType;
 
+	private int expectedRelayChainLength;
+
 	private final KeepAliveTask heartbeatTask;
 	private final Runnable idleTask;
 	private ScheduledFuture<?> idleTaskFuture;
@@ -79,6 +81,9 @@ public abstract class ClientSession {
 		closeEventsTriggered = new AtomicBoolean(false);
 		readBuffer = model.getLocalNode().getBufferCache().takeBuffer();
 		if (model.forwardRaw()) {
+			// must reserve space for packet prefix (payload length and relay chain)
+			expectedRelayChainLength = ((Integer) model.getLocalNode().getProperty("RELAYCHAIN_DEFAULT")).intValue();
+			readBuffer.position(Integer.SIZE / 8 + Short.SIZE / 8 * expectedRelayChainLength);
 			nextMessageType = MessageType.RAW;
 
 			heartbeatTask = null;
@@ -136,12 +141,14 @@ public abstract class ClientSession {
 			}
 		} else {
 			// prepare the buffer for forwarding the message
-			readBuffer.putInt(recvPktRemaining);
+			RemoteNode nextNode = model.getNextNode();
+			if (nextNode != null && !nextNode.forwardRaw())
+				readBuffer.putInt(recvPktRemaining - Short.SIZE / 8);
 		}
 
 		nextMessageType = MessageType.BODY;
 		readBufferOverflow = Math.max(0, recvPktRemaining - readBuffer.remaining());
-		readBuffer.limit(recvPktRemaining - readBufferOverflow);
+		readBuffer.limit(recvPktRemaining - readBufferOverflow + readBuffer.position());
 		return true;
 	}
 
@@ -195,7 +202,7 @@ public abstract class ClientSession {
 				// still have not forwarded the entire body. it's probably that we have
 				// more body queued up that couldn't entirely fit into the buffer.
 				readBufferOverflow = Math.max(0, recvPktRemaining - readBuffer.remaining());
-				readBuffer.limit(recvPktRemaining - readBufferOverflow);
+				readBuffer.limit(recvPktRemaining - readBufferOverflow + readBuffer.position());
 				return true;
 			}
 		}
@@ -228,9 +235,11 @@ public abstract class ClientSession {
 			// TODO: if relayChain has changed since last message was received,
 			// make sure new and old relayChain are exactly the same lengths. otherwise,
 			// readBuffer has to have bytes shifted over to accommodate prefix.
+			if (relayChain.length != expectedRelayChainLength)
+				throw new UnsupportedOperationException("Relay chain length differs from expectations. Buffer shifting not yet implemented");
 
 			// calculate length of packet to forward.
-			readBuffer.putInt(0, readBuffer.position() - (Integer.SIZE / 8 + Short.SIZE / 8 * relayChain.length));
+			readBuffer.putInt(0, readBuffer.position() - (Integer.SIZE / 8 + Short.SIZE / 8));
 			for (int i = 0; i < relayChain.length; i++)
 				readBuffer.putShort(Integer.SIZE / 8 + Short.SIZE / 8 * i, relayChain[i]);
 			nextNode.getClientSession().writeMessage(readBuffer);
@@ -242,7 +251,8 @@ public abstract class ClientSession {
 		// once all bytes in the buffer have been written to nextMessageDest.
 		readBuffer = model.getLocalNode().getBufferCache().takeBuffer();
 		// must reserve space for packet prefix (payload length and relay chain)
-		readBuffer.position(Integer.SIZE / 8 + Short.SIZE / 8 * relayChain.length);
+		expectedRelayChainLength = relayChain.length;
+		readBuffer.position(Integer.SIZE / 8 + Short.SIZE / 8 * expectedRelayChainLength);
 		// note that (recvPktRemaining == readBuffer's unused capacity).
 		// if readBuffer was full, it's probable that we have more body queued up
 		// that couldn't entirely fit into the buffer.
@@ -287,7 +297,7 @@ public abstract class ClientSession {
 	}
 
 	public PacketBuilder packetBuilder(int initialMessageLength, final short... destinationChain) {
-		final int prefixLen = Integer.SIZE / 8 + Short.SIZE / 8 * destinationChain.length;
+		final int prefixLen = Integer.SIZE / 8 + Short.SIZE / 8;
 		return new PacketBuilder(prefixLen + initialMessageLength) {
 			@Override
 			protected void initialize(ByteBuffer buf) {

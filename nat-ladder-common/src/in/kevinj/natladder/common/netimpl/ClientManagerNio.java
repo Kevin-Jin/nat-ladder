@@ -15,9 +15,11 @@ import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -54,29 +56,77 @@ public class ClientManagerNio implements ClientManager {
 	// on different threads for handling reading and writing in parallel
 	// while still keeping allowing some ClientSession code to not be thread-safe.
 	private class EventLoopTask implements Runnable {
-		private RemoteNode.RemoteNodeFactory acceptorClientMaker, connectorClientMaker;
+		private Selector selector;
 		private final Map<SelectionKey, ServerSocketChannel> listeners;
 		private final Map<SelectionKey, SocketChannel> pendingConnections;
+		private final Map<SelectionKey, RemoteNode.RemoteNodeFactory> clientMakers;
 		private final Map<SelectionKey, Map<String, Object>> newConnectionProps;
+		private final List<Runnable> runInEventLoop;
 
 		public EventLoopTask() {
 			listeners = new HashMap<SelectionKey, ServerSocketChannel>();
 			pendingConnections = new HashMap<SelectionKey, SocketChannel>();
 			newConnectionProps = new HashMap<SelectionKey, Map<String, Object>>();
+			clientMakers = new HashMap<SelectionKey, RemoteNode.RemoteNodeFactory>();
+			runInEventLoop = new ArrayList<Runnable>();
 		}
 
-		public void addConnector(RemoteNode.RemoteNodeFactory clientMaker, SocketChannel socket, Map<String, Object> properties) throws ClosedChannelException {
-			connectorClientMaker = clientMaker;
-			SelectionKey key = socket.register(selector, SelectionKey.OP_CONNECT);
-			pendingConnections.put(key, socket);
-			newConnectionProps.put(key, properties != null ? properties : Collections.<String, Object>emptyMap());
+		// see http://stackoverflow.com/q/3189153/444402. to reduce the headache,
+		// just wakeup the selector thread when we want to register channels
+		private void invokeLater(Runnable r) {
+			synchronized (runInEventLoop) {
+				runInEventLoop.add(r);
+				if (selector != null)
+					selector.wakeup();
+			}
 		}
 
-		public void addAcceptor(RemoteNode.RemoteNodeFactory clientMaker, ServerSocketChannel socket, Map<String, Object> properties) throws ClosedChannelException {
-			acceptorClientMaker = clientMaker;
-			SelectionKey key = socket.register(selector, SelectionKey.OP_ACCEPT);
-			listeners.put(key, socket);
-			newConnectionProps.put(key, properties != null ? properties : Collections.<String, Object>emptyMap());
+		public void addConnector(final SocketAddress address, final RemoteNode.RemoteNodeFactory clientMaker, final SocketChannel socket, final Map<String, Object> properties) {
+			invokeLater(new Runnable() {
+				@Override
+				public void run() {
+					SelectionKey key;
+					try {
+						key = socket.register(selector, SelectionKey.OP_CONNECT);
+						clientMakers.put(key, clientMaker);
+						pendingConnections.put(key, socket);
+						newConnectionProps.put(key, properties != null ? properties : Collections.<String, Object>emptyMap());
+						LOG.log(Level.INFO, "Connecting to {0}", address);
+					} catch (ClosedChannelException ex) {
+						close("Could not connect to " + address, ex);
+					}
+				}
+			});
+		}
+
+		public void addAcceptor(final SocketAddress address, final RemoteNode.RemoteNodeFactory clientMaker, final ServerSocketChannel socket, final Map<String, Object> properties) {
+			invokeLater(new Runnable() {
+				@Override
+				public void run() {
+					try {
+						SelectionKey key = socket.register(selector, SelectionKey.OP_ACCEPT);
+						clientMakers.put(key, clientMaker);
+						listeners.put(key, socket);
+						newConnectionProps.put(key, properties != null ? properties : Collections.<String, Object>emptyMap());
+						LOG.log(Level.INFO, "Listening on {0}", address);				
+					} catch (ClosedChannelException ex) {
+						close("Could not bind on " + address, ex);
+					}
+				}
+			});
+		}
+
+		public void closeSelector() {
+			invokeLater(new Runnable() {
+				@Override
+				public void run() {
+					try {
+						selector.close();
+					} catch (IOException ex) {
+						LOG.log(Level.WARNING, "Error while closing network event selector", ex);
+					}
+				}
+			});
 		}
 
 		private ClientSessionNio registerNewClient(SocketChannel client, final Map<SelectionKey, ClientSessionNio> connected, RemoteNode.RemoteNodeFactory clientMaker, Map<String, Object> properties) {
@@ -156,9 +206,18 @@ public class ClientManagerNio implements ClientManager {
 			// allows type safety, unlike SelectionKey.attach()
 			Map<SelectionKey, ClientSessionNio> connected = new ConcurrentHashMap<SelectionKey, ClientSessionNio>();
 			try {
+				selector = Selector.open();
+				// in case !runInEventLoop.isEmpty()
+				selector.wakeup();
 				while (selector.isOpen()) {
 					selector.select();
 					Set<SelectionKey> keys = selector.selectedKeys();
+					synchronized (runInEventLoop) {
+						for (Iterator<Runnable> iter = runInEventLoop.iterator(); iter.hasNext(); ) {
+							iter.next().run();
+							iter.remove();
+						}
+					}
 
 					for (Iterator<SelectionKey> keyIter = keys.iterator(); keyIter.hasNext(); ) {
 						SelectionKey key = keyIter.next();
@@ -171,12 +230,12 @@ public class ClientManagerNio implements ClientManager {
 						try {
 							if (key.isValid() && key.isAcceptable())
 								if ((listener = listeners.get(key)) != null && (newConnProps = newConnectionProps.get(key)) != null)
-									session = registerNewClient(client = listener.accept(), connected, acceptorClientMaker, newConnProps);
+									session = registerNewClient(client = listener.accept(), connected, clientMakers.get(key), newConnProps);
 								else
 									close("Network event selector was manipulated outside of connect() and listen()", null);
 							if (key.isValid() && key.isConnectable() && (!(client = (SocketChannel) key.channel()).isConnectionPending() || client.finishConnect()))
 								if (pendingConnections.remove(key) == client && (newConnProps = newConnectionProps.get(key)) != null)
-									session = registerNewClient(client, connected, connectorClientMaker, newConnProps);
+									session = registerNewClient(client, connected, clientMakers.remove(key), newConnProps);
 								else
 									close("Network event selector was manipulated outside of connect() and listen()", null);
 							if (key.isValid() && key.isReadable())
@@ -192,7 +251,8 @@ public class ClientManagerNio implements ClientManager {
 						} catch (CancelledKeyException e) {
 							// don't worry about it - session is already closed
 						} catch (ConnectException ex) {
-							SessionType sessionType = listeners.containsKey(key) ? acceptorClientMaker.typeToMake() : pendingConnections.remove(key) != null ? connectorClientMaker.typeToMake() : null;
+							pendingConnections.remove(key);
+							SessionType sessionType = clientMakers.remove(key).typeToMake();
 							if (sessionType == null)
 								throw new IllegalStateException("Invalid session type " + sessionType);
 
@@ -237,23 +297,19 @@ public class ClientManagerNio implements ClientManager {
 
 	private final AtomicBoolean closeEventsTriggered;
 	private final EventLoopTask eventLoop;
-	private Selector selector;
 
 	public ClientManagerNio(LocalRouter thisState) {
 		model = thisState;
 		closeEventsTriggered = new AtomicBoolean(false);
 		eventLoop = new EventLoopTask();
+		eventLoopThreadPool.submit(eventLoop);
 	}
 
 	@Override
 	public void close(String reason, Throwable reasonExc) {
 		if (closeEventsTriggered.compareAndSet(false, true)) {
 			model.dispose();
-			try {
-				selector.close();
-			} catch (IOException ex) {
-				LOG.log(Level.WARNING, "Error while closing network event selector", ex);
-			}
+			eventLoop.closeSelector();
 			if (reasonExc == null)
 				LOG.log(Level.INFO, "Network event selector closed ({0})", reason);
 			else
@@ -272,12 +328,7 @@ public class ClientManagerNio implements ClientManager {
 			listener.socket().bind(address);
 			listener.configureBlocking(false);
 
-			if (selector != null) {
-				selector = Selector.open();
-				eventLoopThreadPool.submit(eventLoop);
-			}
-			eventLoop.addAcceptor(clientMaker, listener, properties);
-			LOG.log(Level.INFO, "Listening on {0}", address);
+			eventLoop.addAcceptor(address, clientMaker, listener, properties);
 		} catch (IOException ex) {
 			close("Could not bind on " + address, ex);
 		}
@@ -294,12 +345,7 @@ public class ClientManagerNio implements ClientManager {
 			speaker.configureBlocking(false);
 			speaker.connect(address);
 
-			if (selector != null) {
-				selector = Selector.open();
-				eventLoopThreadPool.submit(eventLoop);
-			}
-			eventLoop.addConnector(clientMaker, speaker, properties);
-			LOG.log(Level.INFO, "Connecting to {0}", address);
+			eventLoop.addConnector(address, clientMaker, speaker, properties);
 		} catch (IOException ex) {
 			close("Could not connect to " + address, ex);
 		}
