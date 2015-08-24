@@ -34,6 +34,7 @@ public class RemoteNode {
 	private ClientSession session;
 	private short itsNodeCode;
 	private boolean isNodeCodeSet;
+	private boolean closeQuietly;
 
 	public RemoteNode(LocalRouter parentModel) {
 		this.parentModel = parentModel;
@@ -44,8 +45,11 @@ public class RemoteNode {
 		session.setPreClose(new Runnable() {
 			@Override
 			public void run() {
-				if (!getLocalNode().getClientManager().isShutdown())
+				if (!getLocalNode().getClientManager().isShutdown() && isRemoteCodeSet())
 					dispose();
+				if (getRemoteType() == ClientType.CENTRAL_RELAY)
+					// lost connection to the central relay. just shut ourselves down.
+					getLocalNode().getClientManager().close("Lost connection to " + ClientType.CENTRAL_RELAY, null);
 			}
 		});
 	}
@@ -188,21 +192,26 @@ public class RemoteNode {
 		getLocalNode().getClientManager().close("Lost connection to " + ClientType.CENTRAL_RELAY, null);
 	}
 
-	protected static void disposeOnCentralRelay(LocalRouter localNode, SessionType sessionType, short nodeCode) {
+	protected static void disposeOnCentralRelay(LocalRouter localNode, SessionType sessionType, short nodeCode, boolean quiet) {
 		assert localNode.getLocalType() == ClientType.CENTRAL_RELAY : localNode.getLocalType();
 
 		switch (sessionType) {
 			case UPWARDS_RELAY: {
 				// entry node disconnected, we have to notify just one exit node.
 				EntryNodeInfo info = (EntryNodeInfo) localNode.removeProperty("ENTRY_" + nodeCode);
-				RemoteNode downstream;
-				if (info != null)
-					if ((downstream = localNode.getDownstream(info.connectedExitNode)) != null)
-						downstream.notifyFoundCutInternal(nodeCode);
-					else
+				if (info != null) {
+					ExitNodeInfo exitNode = (ExitNodeInfo) localNode.getProperty("EXIT_" + info.connectedExitNode);
+					RemoteNode downstream = localNode.getDownstream(info.connectedExitNode);
+					if (exitNode != null && downstream != null) {
+						exitNode.connectedEntryNodes.remove(Short.valueOf(nodeCode));
+						if (!quiet)
+							downstream.notifyFoundCutInternal(nodeCode);
+					} else if (!info.isLameDuck) {
 						throw new IllegalStateException("Cut a non-existent connection (node code: " + info.connectedExitNode + ")");
-				else
+					}
+				} else {
 					throw new IllegalStateException("nodeCode referenced non-existent entry node (node code: " + nodeCode + ")");
+				}
 				// deregister UPWARDS_RELAY (i.e. entry node)
 				localNode.deregisterNode(sessionType, nodeCode);
 				break;
@@ -212,12 +221,17 @@ public class RemoteNode {
 				ExitNodeInfo info = (ExitNodeInfo) localNode.removeProperty("EXIT_" + nodeCode);
 				if (info != null) {
 					localNode.removeProperty("EXITNAME_" + info.identifier);
-					RemoteNode upstream;
-					for (Short entryNode : info.connectedEntryNodes)
-						if ((upstream = localNode.getUpstream(entryNode.shortValue())) != null)
-							upstream.notifyFoundCutInternal(nodeCode);
-						else
-							throw new IllegalStateException("Cut a non-existent connection (node code: " + entryNode + ")");
+					for (Short connectedEntryNode : info.connectedEntryNodes) {
+						EntryNodeInfo entryNode = (EntryNodeInfo) localNode.getProperty("ENTRY_" + connectedEntryNode);
+						RemoteNode upstream = localNode.getUpstream(connectedEntryNode.shortValue());
+						if (entryNode != null && upstream != null) {
+							entryNode.isLameDuck = true;
+							if (!quiet)
+								upstream.notifyFoundCutInternal(nodeCode);
+						} else {
+							throw new IllegalStateException("Cut a non-existent connection (node code: " + connectedEntryNode + ")");
+						}
+					}
 				} else {
 					throw new IllegalStateException("nodeCode referenced non-existent exit node (node code: " + nodeCode + ")");
 				}
@@ -232,6 +246,7 @@ public class RemoteNode {
 
 	protected void dispose() {
 		// notify those who care that we are shutting ourself down
+		LOG.log(Level.INFO, "Connection with {0} ({1}) at {2} lost", new Object[] { getRemoteTypeString(), getRemoteCode(), getClientSession().getAddress() });
 		switch (getLocalNode().getLocalType()) {
 			case ENTRY_NODE:
 			case EXIT_NODE: {
@@ -239,11 +254,10 @@ public class RemoteNode {
 					case TERMINUS: {
 						// disconnecting from terminus. send message through central relay to notify opposite end.
 						RemoteNode centralRelay = getNextNode();
-						if (centralRelay != null)
+						if (!closeQuietly && centralRelay != null)
 							centralRelay.notifyFoundCutExternal(getRemoteCode());
 						// deregister TERMINUS
 						getLocalNode().deregisterNode(this);
-						LOG.log(Level.INFO, "Connection with {0} at {1} lost", new Object[] { getRemoteTypeString(), getClientSession().getAddress() });
 						break;
 					}
 					case DOWNWARDS_RELAY:
@@ -254,20 +268,20 @@ public class RemoteNode {
 						// 2.) they initiated the disconnection themselves, in which case our
 						// notification will fall on deaf ears that just don't care.
 						getLocalNode().deregisterNode(this);
-						LOG.log(Level.INFO, "Connection with {0} at {1} lost", new Object[] { getRemoteTypeString(), getClientSession().getAddress() });
-
-						// lost connection to the central relay. just shut ourselves down.
-						getLocalNode().getClientManager().close("Lost connection to " + ClientType.CENTRAL_RELAY, null);
 						break;
 				}
 				break;
 			}
 			case CENTRAL_RELAY:
-				disposeOnCentralRelay(getLocalNode(), getSessionType(), getRemoteCode());
-				LOG.log(Level.INFO, "Connection with {0} at {1} lost", new Object[] { getRemoteTypeString(), getClientSession().getAddress() });
+				disposeOnCentralRelay(getLocalNode(), getSessionType(), getRemoteCode(), closeQuietly);
 				break;
 			default:
 				throw new IllegalStateException("Invalid client type " + getLocalNode().getLocalType());
 		}
+	}
+
+	public void quietClose(String reason) {
+		closeQuietly = true;
+		getClientSession().close(reason);
 	}
 }

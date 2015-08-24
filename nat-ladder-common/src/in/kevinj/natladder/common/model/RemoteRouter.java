@@ -291,17 +291,18 @@ public class RemoteRouter extends RemoteNode {
 		switch (foundCutType) {
 			case PacketHeaders.FOUND_CUT_TERMINUS: {
 				short ourTerminus = packet.readShort();
-				short[] relayChain = (short[]) getLocalNode().removeProperty("RELAYCHAIN_" + ourTerminus); 
+				short[] relayChain = (short[]) getLocalNode().removeProperty("RELAYCHAIN_" + ourTerminus);
 				if (relayChain == null)
 					throw new IllegalStateException("Cut a non-existent connection (node code: " + ourTerminus + ")");
-	
+
 				switch (getSessionType()) {
 					case UPWARDS_RELAY: {
 						assert getLocalNode().getLocalType() == ClientType.EXIT_NODE : getLocalNode().getLocalType();
 
 						RemoteNode externalConn = getLocalNode().getDownstream(ourTerminus);
 						if (externalConn != null)
-							externalConn.getClientSession().close("Lost connection on source node");
+							// we're being notified by CENTRAL_RELAY. no need to echo back the cut notification to CENTRAL_RELAY
+							externalConn.quietClose("Lost connection on source node");
 						else
 							throw new IllegalStateException("Cut a non-existent connection (node code: " + ourTerminus + ")");
 						break;
@@ -311,7 +312,8 @@ public class RemoteRouter extends RemoteNode {
 
 						RemoteNode externalConn = getLocalNode().getUpstream(ourTerminus);
 						if (externalConn != null)
-							externalConn.getClientSession().close("Lost connection on source node");
+							// we're being notified by CENTRAL_RELAY. no need to echo back the cut notification to CENTRAL_RELAY
+							externalConn.quietClose("Lost connection on source node");
 						else
 							throw new IllegalStateException("Cut a non-existent connection (node code: " + ourTerminus + ")");
 						break;
@@ -329,11 +331,11 @@ public class RemoteRouter extends RemoteNode {
 
 						// cut terminus connections that relay through the provided entry node
 						Collection<?> ourTermini = (Collection<?>) getLocalNode().removeProperty("REVERSE_" + otherNode);
-						if (ourTermini == null)
-							throw new IllegalStateException("Cut a non-existent connection (node code: " + otherNode + ")");
-
-						for (Object ourTerminus : ourTermini)
-							getLocalNode().getDownstream((Short) ourTerminus).getClientSession().close("Lost connection to entry node");
+						if (ourTermini != null)
+							// at least one pipe exists through the entry node
+							for (Object ourTerminus : ourTermini)
+								// we're being notified by CENTRAL_RELAY. no need to echo back the cut notification to CENTRAL_RELAY
+								getLocalNode().getDownstream((Short) ourTerminus).quietClose("Lost connection to entry node");
 						break;
 					case DOWNWARDS_RELAY:
 						assert getLocalNode().getLocalType() == ClientType.ENTRY_NODE : getLocalNode().getLocalType();
@@ -428,7 +430,7 @@ public class RemoteRouter extends RemoteNode {
 			case CENTRAL_RELAY:
 				// if we're an UPWARDS_RELAY, then the disconnected next node is a DOWNWARDS_RELAY
 				// if we're a DOWNWARDS_RELAY, then the disconnected next node is an UPWARDS_RELAY
-				disposeOnCentralRelay(getLocalNode(), getSessionType().invert(), thisMessageDest);
+				disposeOnCentralRelay(getLocalNode(), getSessionType().invert(), thisMessageDest, false);
 				break;
 			default:
 				throw new IllegalStateException("Invalid client type " + getLocalNode().getLocalType());

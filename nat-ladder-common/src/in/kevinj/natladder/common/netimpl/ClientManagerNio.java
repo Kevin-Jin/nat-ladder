@@ -108,7 +108,7 @@ public class ClientManagerNio implements ClientManager {
 						clientMakers.put(key, clientMaker);
 						listeners.put(key, socket);
 						newConnectionProps.put(key, properties != null ? properties : Collections.<String, Object>emptyMap());
-						LOG.log(Level.INFO, "Listening on {0}", address);				
+						LOG.log(Level.INFO, "Listening on {0}", address);
 					} catch (ClosedChannelException ex) {
 						close("Could not bind on " + address, ex);
 					}
@@ -169,7 +169,7 @@ public class ClientManagerNio implements ClientManager {
 
 		private void writeForClient(SocketChannel client, ClientSessionNio session, SelectionKey key) {
 			if (session.tryFlushSendQueue() == 1)
-				key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);					
+				key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);
 		}
 
 		private void cleanupAll(Map<SelectionKey, ClientSessionNio> connected) {
@@ -199,6 +199,7 @@ public class ClientManagerNio implements ClientManager {
 					LOG.log(Level.WARNING, "Error while terminating listener at " + item.getValue().socket().getLocalSocketAddress(), ex);
 				}
 			}
+			model.dispose();
 		}
 
 		@Override
@@ -308,7 +309,6 @@ public class ClientManagerNio implements ClientManager {
 	@Override
 	public void close(String reason, Throwable reasonExc) {
 		if (closeEventsTriggered.compareAndSet(false, true)) {
-			model.dispose();
 			eventLoop.closeSelector();
 			if (reasonExc == null)
 				LOG.log(Level.INFO, "Network event selector closed ({0})", reason);

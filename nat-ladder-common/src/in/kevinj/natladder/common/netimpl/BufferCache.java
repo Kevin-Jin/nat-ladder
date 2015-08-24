@@ -10,7 +10,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 // are returned, those slices will be coalesced into one large
 // free block.
 /**
- * To ensure fungibility, all ByteBuffer retrieved and stashed must be direct and have a length of DEFAULT_BUFFER_SIZE. 
+ * To ensure fungibility, all ByteBuffer retrieved and stashed must be direct and have a length of DEFAULT_BUFFER_SIZE.
  *
  * @author Kevin Jin
  */

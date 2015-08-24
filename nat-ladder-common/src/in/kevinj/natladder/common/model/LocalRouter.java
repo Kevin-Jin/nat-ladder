@@ -5,6 +5,7 @@ import in.kevinj.natladder.common.netimpl.ClientManager;
 import in.kevinj.natladder.common.util.ScheduledHashedWheelExecutor;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedList;
@@ -90,14 +91,16 @@ public abstract class LocalRouter {
 	}
 
 	@SuppressWarnings("unchecked")
-	public void extendProperty(String prop, Object value) {
+	public void extendProperty(String prop, Object... values) {
 		Object existing = properties.get(prop);
-		if (existing == null)
+		if (existing == null) {
 			existing = new ArrayList<Object>();
-		else if (!(existing instanceof Collection))
+			properties.put(prop, existing);
+		} else if (!(existing instanceof Collection)) {
 			throw new IllegalStateException(prop + " is not a list property.");
+		}
 
-		((Collection<Object>) existing).add(value);
+		((Collection<Object>) existing).addAll(Arrays.asList(values));
 	}
 
 	public Object getProperty(String prop) {
@@ -117,7 +120,7 @@ public abstract class LocalRouter {
 	}
 
 	private synchronized short registerNode(SortedMap<Short, RemoteNode> nodes, Queue<Short> gaps, RemoteNode node, short autoIncrement) {
-		assert node.isRemoteCodeSet() ^ getLocalType() == ClientType.CENTRAL_RELAY : ((node.isRemoteCodeSet() ? node.getRemoteCode() : "null") + " " + getLocalType());
+		assert node.getSessionType() == SessionType.TERMINUS || node.isRemoteCodeSet() ^ getLocalType() == ClientType.CENTRAL_RELAY : (node.getSessionType() + " " + (node.isRemoteCodeSet() ? node.getRemoteCode() : "null") + " " + getLocalType());
 
 		short nodeCode;
 		if (node.isRemoteCodeSet())

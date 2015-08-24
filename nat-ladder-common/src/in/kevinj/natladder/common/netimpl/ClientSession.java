@@ -12,6 +12,7 @@ import java.io.IOException;
 import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channel;
+import java.util.Arrays;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -117,6 +118,13 @@ public abstract class ClientSession {
 		return readBuffer;
 	}
 
+	private byte[] readAll(ByteBuffer buf) {
+		buf.flip();
+		byte[] contents = new byte[buf.remaining()];
+		buf.get(contents);
+		return contents;
+	}
+
 	private boolean processHeader(int readBytes) {
 		assert !model.forwardRaw() : "Forwarding raw in processHeader()";
 
@@ -187,6 +195,8 @@ public abstract class ClientSession {
 			int recvPktRemaining = readBufferOverflow + readBuffer.remaining();
 			RemoteNode nextNode = model.getNextNode();
 			if (nextNode == null) {
+				if (LOG.isLoggable(Level.FINER))
+					LOG.log(Level.FINER, "Dropped packet {0}", Arrays.toString(readAll(readBuffer)));
 				model.foundNextNodeCut();
 				model.getLocalNode().getBufferCache().tryReturnBuffer(readBuffer);
 			} else {
@@ -228,6 +238,8 @@ public abstract class ClientSession {
 		int recvPktRemaining = readBuffer.remaining();
 		RemoteNode nextNode = model.getNextNode();
 		if (nextNode == null) {
+			if (LOG.isLoggable(Level.FINER))
+				LOG.log(Level.FINER, "Dropped packet {0}", Arrays.toString(readAll(readBuffer)));
 			model.foundNextNodeCut();
 			model.getLocalNode().getBufferCache().tryReturnBuffer(readBuffer);
 		} else {
@@ -267,7 +279,7 @@ public abstract class ClientSession {
 			close("EOF received");
 			return false;
 		}
-	
+
 		try {
 			switch (nextMessageType) {
 				case HEADER:
