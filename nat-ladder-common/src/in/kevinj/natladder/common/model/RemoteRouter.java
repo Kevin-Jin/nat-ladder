@@ -245,6 +245,7 @@ public class RemoteRouter extends RemoteNode {
 				int portNumber = packet.readInt();
 				short exitNodeCode = packet.readShort();
 				getLocalNode().getClientManager().listen(externalNodeFactory,
+					"0.0.0.0",
 					portNumber,
 					Collections.<String, Object>singletonMap("exitNodeCode", Short.valueOf(exitNodeCode))
 				);

@@ -120,7 +120,9 @@ public abstract class LocalRouter {
 	}
 
 	private synchronized short registerNode(SortedMap<Short, RemoteNode> nodes, Queue<Short> gaps, RemoteNode node, short autoIncrement) {
-		assert node.getSessionType() == SessionType.TERMINUS || node.isRemoteCodeSet() ^ getLocalType() == ClientType.CENTRAL_RELAY : (node.getSessionType() + " " + (node.isRemoteCodeSet() ? node.getRemoteCode() : "null") + " " + getLocalType());
+		// we are responsible for auto generating a node code if we are CENTRAL_RELAY
+		// or if we are entry/exit node and the link is to a TERMINUS
+		assert !node.isRemoteCodeSet() == (getLocalType() == ClientType.CENTRAL_RELAY || node.getSessionType() == SessionType.TERMINUS) : ((node.isRemoteCodeSet() ? node.getRemoteCode() : "null") + " " + getLocalType() + " " + node.getSessionType());
 
 		short nodeCode;
 		if (node.isRemoteCodeSet())

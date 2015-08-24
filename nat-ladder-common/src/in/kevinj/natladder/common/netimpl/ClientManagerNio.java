@@ -319,10 +319,9 @@ public class ClientManagerNio implements ClientManager {
 	}
 
 	// TODO: properties is not type-safe and a code smell. replace functionality with polymorphism somehow.
-	// FIXME: internalNodeFactory for central relay, externalNodeFactory for entry node
 	@Override
-	public void listen(RemoteNode.RemoteNodeFactory clientMaker, int port, Map<String, Object> properties) {
-		SocketAddress address = new InetSocketAddress(port);
+	public void listen(RemoteNode.RemoteNodeFactory clientMaker, String host, int port, Map<String, Object> properties) {
+		SocketAddress address = new InetSocketAddress(host, port);
 		try {
 			ServerSocketChannel listener = ServerSocketChannel.open();
 			listener.socket().bind(address);
@@ -335,8 +334,6 @@ public class ClientManagerNio implements ClientManager {
 	}
 
 	// TODO: properties is not type-safe and a code smell. replace functionality with polymorphism somehow.
-	// FIXME: externalNodeFactory for exit node -> terminus,
-	// downwardsRelayFactory for entry node -> central relay, upwardsRelayFactory for exit node -> central relay
 	@Override
 	public void connect(RemoteNode.RemoteNodeFactory clientMaker, String host, int port, Map<String, Object> properties) {
 		SocketAddress address = new InetSocketAddress(host, port);
