@@ -3,6 +3,7 @@ package in.kevinj.natladder.common.model;
 import in.kevinj.natladder.common.netimpl.ClientSession;
 import in.kevinj.natladder.common.util.PacketParser;
 
+import java.util.Collection;
 import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -61,13 +62,30 @@ public class RemoteNode {
 		assert getSessionType() != SessionType.TERMINUS : getSessionType();
 
 		short[] relayChain = (short[]) getLocalNode().removeProperty("RELAYCHAIN_" + ourTerminus);
-		if (relayChain == null)
+		if (relayChain != null) {
+			if (getLocalNode().getLocalType() == ClientType.EXIT_NODE) { 
+				Collection<?> ourTermini = (Collection<?>) getLocalNode().getProperty("REVERSE_" + relayChain[0]);
+				if (ourTermini == null || !ourTermini.remove(Short.valueOf(ourTerminus)))
+					throw new IllegalStateException("Inconsistent state in RELAYCHAIN_ or REVERSE_ (node code: " + ourTerminus + ")");
+			}
+
+			getClientSession().packetBuilder(Byte.SIZE / 8 * 2 + Short.SIZE / 8, relayChain[0], LocalRouter.CONTROL_CODE)
+				.writeByte(PacketHeaders.FOUND_CUT)
+				.writeByte(PacketHeaders.FOUND_CUT_TERMINUS)
+				.writeShort(relayChain[1])
+			.send();
+		} else if (getLocalNode().getLocalType() == ClientType.ENTRY_NODE) {
+			// relayChain can actually be null if connection to exit node has not yet established the pipe
+			// (maybe because the other terminus is timing out on us).
+			short exitNodeCode = ((Short) getLocalNode().getProperty("exitNodeCode")).shortValue();
+			getClientSession().packetBuilder(Byte.SIZE / 8 + Short.SIZE / 8 * 2, exitNodeCode, LocalRouter.CONTROL_CODE)
+				.writeByte(PacketHeaders.PIPE_FAIL)
+				.writeShort(getLocalNode().getLocalCode())
+				.writeShort(ourTerminus)
+			.send();
+		} else {
 			throw new IllegalStateException("Cut a non-existent connection (node code: " + ourTerminus + ")");
-		getClientSession().packetBuilder(Byte.SIZE / 8 * 2 + Short.SIZE / 8, relayChain[0], LocalRouter.CONTROL_CODE)
-			.writeByte(PacketHeaders.FOUND_CUT)
-			.writeByte(PacketHeaders.FOUND_CUT_TERMINUS)
-			.writeShort(relayChain[1])
-		.send();
+		}
 	}
 
 	protected void notifyFoundCutInternal(short otherNode) {
@@ -153,16 +171,31 @@ public class RemoteNode {
 			}
 			case EXIT_NODE: {
 				short[] entryNodeRelayChain = (short[]) properties.get("entryNodeRelayChain");
-				// set our relay chain and relay chain reverse mapping
-				getLocalNode().setProperty("RELAYCHAIN_" + getRemoteCode(), entryNodeRelayChain);
-				getLocalNode().extendProperty("REVERSE_" + entryNodeRelayChain[0], getRemoteCode());
-				getNextNode().getClientSession().packetBuilder(Byte.SIZE / 8 + Short.SIZE / 8 * 3, entryNodeRelayChain[0], LocalRouter.CONTROL_CODE)
-					.writeByte(PacketHeaders.PIPE_MADE)
-					.writeShort(entryNodeRelayChain[1])
-					.writeShort(getLocalNode().getLocalCode())
-					.writeShort(getRemoteCode())
-				.send();
-				LOG.log(Level.INFO, "Connection with {0} ({1}) at {2} piped through", new Object[] { getRemoteTypeString(), getRemoteCode(), getClientSession().getAddress() });
+				// unmark our connection as "in progress"
+				Collection<?> ourTermini = (Collection<?>) getLocalNode().getProperty("INPROGRESS_" + entryNodeRelayChain[0]);
+				boolean removed = (ourTermini == null || !ourTermini.remove(Short.valueOf(entryNodeRelayChain[1])));
+
+				Boolean ignore = (Boolean) getLocalNode().removeProperty("IGNORE_" + entryNodeRelayChain[0] + "_" + entryNodeRelayChain[1]);
+				if (ignore == null || !ignore.booleanValue()) {
+					// should only be false if entry node disconnected while this connection was pending.
+					// in that case, ignore is true and this execution path should not have been followed.
+					if (!removed)
+						throw new IllegalStateException("Completed a non-existent connection (remote node code: " + entryNodeRelayChain[0] + "," + entryNodeRelayChain[1] + ")");
+
+					// set our relay chain and relay chain reverse mapping
+					getLocalNode().setProperty("RELAYCHAIN_" + getRemoteCode(), entryNodeRelayChain);
+					getLocalNode().extendProperty("REVERSE_" + entryNodeRelayChain[0], getRemoteCode());
+					getNextNode().getClientSession().packetBuilder(Byte.SIZE / 8 + Short.SIZE / 8 * 3, entryNodeRelayChain[0], LocalRouter.CONTROL_CODE)
+						.writeByte(PacketHeaders.PIPE_MADE)
+						.writeShort(entryNodeRelayChain[1])
+						.writeShort(getLocalNode().getLocalCode())
+						.writeShort(getRemoteCode())
+					.send();
+					LOG.log(Level.INFO, "Connection with {0} ({1}) at {2} piped through", new Object[] { getRemoteTypeString(), getRemoteCode(), getClientSession().getAddress() });
+				} else {
+					// if other end is already disconnected, disconnect this end
+					quietClose("Lost connection on source node");
+				}
 				break;
 			}
 			default:
@@ -182,6 +215,11 @@ public class RemoteNode {
 						break;
 					case TERMINUS: {
 						LOG.log(Level.WARNING, "Failed to establish connection with " + getRemoteTypeString(sessionType, RemoteRouter.getRemoteType(sessionType, localNode)), ex);
+						short[] entryNodeRelayChain = (short[]) properties.get("entryNodeRelayChain");
+						getNextNode(localNode).getClientSession().packetBuilder(Byte.SIZE / 8 + Short.SIZE / 8, entryNodeRelayChain[0], LocalRouter.CONTROL_CODE)
+							.writeByte(PacketHeaders.PIPE_FAIL)
+							.writeShort(entryNodeRelayChain[1])
+						.send();
 						break;
 					}
 					default:

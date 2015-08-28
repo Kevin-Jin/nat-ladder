@@ -4,6 +4,7 @@ import in.kevinj.natladder.common.util.PacketParser;
 
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.logging.Level;
 
@@ -253,6 +254,7 @@ public class RemoteRouter extends RemoteNode {
 					portNumber,
 					Collections.<String, Object>singletonMap("exitNodeCode", Short.valueOf(exitNodeCode))
 				);
+				getLocalNode().setProperty("exitNodeCode", Short.valueOf(exitNodeCode));
 				break;
 			}
 			case EXIT_NODE:
@@ -304,6 +306,10 @@ public class RemoteRouter extends RemoteNode {
 					case UPWARDS_RELAY: {
 						assert getLocalNode().getLocalType() == ClientType.EXIT_NODE : getLocalNode().getLocalType();
 
+						Collection<?> ourTermini = (Collection<?>) getLocalNode().getProperty("REVERSE_" + relayChain[0]);
+						if (ourTermini == null || !ourTermini.remove(Short.valueOf(ourTerminus)))
+							throw new IllegalStateException("Inconsistent state in RELAYCHAIN_ or REVERSE_ (node code: " + ourTerminus + ")");
+
 						RemoteNode externalConn = getLocalNode().getDownstream(ourTerminus);
 						if (externalConn != null)
 							// we're being notified by CENTRAL_RELAY. no need to echo back the cut notification to CENTRAL_RELAY
@@ -336,11 +342,21 @@ public class RemoteRouter extends RemoteNode {
 
 						// cut terminus connections that relay through the provided entry node
 						Collection<?> ourTermini = (Collection<?>) getLocalNode().removeProperty("REVERSE_" + otherNode);
+						RemoteNode node;
 						if (ourTermini != null)
 							// at least one pipe exists through the entry node
 							for (Object ourTerminus : ourTermini)
 								// we're being notified by CENTRAL_RELAY. no need to echo back the cut notification to CENTRAL_RELAY
-								getLocalNode().getDownstream((Short) ourTerminus).quietClose("Lost connection to entry node");
+								if ((node = getLocalNode().getDownstream(((Short) ourTerminus).shortValue())) != null)
+									node.quietClose("Lost connection to entry node");
+								else
+									throw new IllegalStateException("Cut a non-existent connection (node code: " + ourTerminus + ")");
+
+						// cut connections in progress
+						ourTermini = (Collection<?>) getLocalNode().removeProperty("INPROGRESS_" + otherNode);
+						if (ourTermini != null)
+							for (Object ourTerminus : ourTermini)
+								getLocalNode().setProperty("IGNORE_" + otherNode + "_" + ourTerminus, Boolean.TRUE);
 						break;
 					case DOWNWARDS_RELAY:
 						assert getLocalNode().getLocalType() == ClientType.ENTRY_NODE : getLocalNode().getLocalType();
@@ -363,6 +379,7 @@ public class RemoteRouter extends RemoteNode {
 
 		short entryNodeCode = packet.readShort();
 		short terminusCode = packet.readShort();
+		getLocalNode().extendProperty("INPROGRESS_" + entryNodeCode, Short.valueOf(terminusCode));
 		getLocalNode().getClientManager().connect(externalNodeFactory,
 			(String) getLocalNode().getProperty("terminusHost"),
 			((Integer) getLocalNode().getProperty("terminusPort")).intValue(),
@@ -375,11 +392,58 @@ public class RemoteRouter extends RemoteNode {
 
 		short ourTerminus = packet.readShort();
 		short exitNodeCode = packet.readShort();
-		short terminusCode = packet.readShort();
+		short theirTerminus = packet.readShort();
 		// set our relay chain
-		getLocalNode().setProperty("RELAYCHAIN_" + ourTerminus, new short[] { exitNodeCode, terminusCode });
+		getLocalNode().setProperty("RELAYCHAIN_" + ourTerminus, new short[] { exitNodeCode, theirTerminus });
 		RemoteNode terminus = getNextNode(ourTerminus);
 		LOG.log(Level.INFO, "Connection with {0} ({1}) at {2} piped through", new Object[] { terminus.getRemoteTypeString(), terminus.getRemoteCode(), terminus.getClientSession().getAddress() });
+	}
+
+	private void processPipeFail(PacketParser packet) {
+		switch (getLocalNode().getLocalType()) {
+			case ENTRY_NODE: {
+				short ourTerminus = packet.readShort();
+				RemoteNode terminus = getNextNode(ourTerminus);
+				terminus.quietClose("Lost connection on source nocde");
+				break;
+			}
+			case EXIT_NODE: {
+				short entryNodeCode = packet.readShort();
+				short theirTerminus = packet.readShort();
+
+				// first try to stop the pending connection attempt.
+				boolean found = false;
+				Collection<?> ourTermini = (Collection<?>) getLocalNode().getProperty("INPROGRESS_" + entryNodeCode);
+				if (ourTermini != null && ourTermini.contains(Short.valueOf(theirTerminus))) {
+					getLocalNode().setProperty("IGNORE_" + entryNodeCode + "_" + theirTerminus, Boolean.TRUE);
+					found = true;
+				}
+
+				// then deregister in case the connection succeeded after entry node sent the notification.
+				ourTermini = (Collection<?>) getLocalNode().getProperty("REVERSE_" + entryNodeCode);
+				if (ourTermini != null) {
+					for (Iterator<?> iter = ourTermini.iterator(); iter.hasNext() && !found; ) {
+						short ourTerminus = ((Short) iter.next()).shortValue();
+						short[] relayChain = (short[]) getLocalNode().getProperty("RELAYCHAIN_" + ourTerminus);
+						if (relayChain[1] == theirTerminus) {
+							// found the node we're looking for. it was connected.
+							iter.remove(); // remove from REVERSE_
+							getLocalNode().removeProperty("RELAYCHAIN_" + ourTerminus);
+							// undo our first step since it's no longer needed.
+							getLocalNode().removeProperty("IGNORE_" + entryNodeCode + "_" + theirTerminus);
+							getLocalNode().getDownstream(ourTerminus).quietClose("Lost connection on source node");
+							found = true;
+						}
+					}
+				}
+
+				if (!found)
+					throw new IllegalStateException("Cut a non-existent connection (remote node code: " + entryNodeCode + "," + theirTerminus + ")");
+				break;
+			}
+			default:
+				throw new IllegalStateException("Invalid client type " + getLocalNode().getLocalType());
+		}
 	}
 
 	@Override
@@ -410,6 +474,9 @@ public class RemoteRouter extends RemoteNode {
 					break;
 				case PacketHeaders.PIPE_MADE:
 					processPipeMade(packet);
+					break;
+				case PacketHeaders.PIPE_FAIL:
+					processPipeFail(packet);
 					break;
 				default:
 					throw new IllegalStateException("Invalid operation " + op);

@@ -9,7 +9,8 @@ public class PacketHeaders {
 		PONG = 0x05,
 		FOUND_CUT = 0x06,
 		MAKE_PIPE = 0x07,
-		PIPE_MADE = 0x08
+		PIPE_MADE = 0x08,
+		PIPE_FAIL = 0x09
 	;
 
 	public static final byte
