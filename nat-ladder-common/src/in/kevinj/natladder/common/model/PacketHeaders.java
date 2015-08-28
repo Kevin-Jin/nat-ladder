@@ -8,7 +8,7 @@ public class PacketHeaders {
 		PING = 0x04,
 		PONG = 0x05,
 		FOUND_CUT = 0x06,
-		NEW_PIPE = 0x07,
+		MAKE_PIPE = 0x07,
 		PIPE_MADE = 0x08
 	;
 

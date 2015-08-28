@@ -34,7 +34,19 @@ public class ClientSessionNio extends ClientSession {
 
 	@Override
 	protected void writeMessage(ByteBuffer buf) {
+		if (closeEventsTriggered.get()) {
+			// don't want to add any new buffers to sendQueue
+			getModel().getLocalNode().getBufferCache().tryReturnBuffer(buf);
+			return;
+		}
+
 		buf.flip();
+		if (buf.remaining() > MAX_PACKET_LENGTH) {
+			// receiving end will just deny this packet anyway
+			getModel().getLocalNode().getBufferCache().tryReturnBuffer(buf);
+			throw new IllegalStateException("Sending too large packet");
+		}
+
 		sendQueue.insert(buf);
 		try {
 			if (selectionKey.isValid() && tryFlushSendQueue() == 0) {
@@ -60,28 +72,52 @@ public class ClientSessionNio extends ClientSession {
 	/* package-private */ int tryFlushSendQueue() {
 		if (!sendQueue.shouldWrite())
 			return -1;
+		Iterator<ByteBuffer> iter = null;
+		ByteBuffer buf = null;
 		try {
-			do {
-				Iterator<ByteBuffer> iter = sendQueue.pop().iterator();
-				while (iter.hasNext()) {
-					ByteBuffer buf = iter.next();
-					if (buf.remaining() == commChn.write(buf)) {
-						getModel().getLocalNode().getBufferCache().tryReturnBuffer(buf);
-					} else {
-						sendQueue.insert(buf);
-						while (iter.hasNext())
-							sendQueue.insert(iter.next());
-						return 0;
+			try {
+				do {
+					iter = sendQueue.pop().iterator();
+					while (iter.hasNext()) {
+						buf = iter.next();
+						if (buf.remaining() == commChn.write(buf)) {
+							getModel().getLocalNode().getBufferCache().tryReturnBuffer(buf);
+							buf = null;
+						} else {
+							return 0;
+						}
 					}
-				}
-			} while (!sendQueue.willBlock());
-			return 1;
+					iter = null;
+				} while (!sendQueue.willBlock());
+				return 1;
+			} finally {
+				// the reason why we need an inner try-finally is
+				// because this must be executed before the catch clause
+				// so that there aren't dangling ByteBuffers not in
+				// sendQueue that we fail to return to the cache in close().
+				if (buf != null)
+					sendQueue.insert(buf);
+				if (iter != null)
+					while (iter.hasNext())
+						sendQueue.insert(iter.next());
+				sendQueue.setCanWrite();
+			}
 		} catch (IOException ex) {
 			//does an IOException in write always mean an invalid channel?
 			close(ex.getMessage());
 			return -2;
-		} finally {
-			sendQueue.setCanWrite();
 		}
+	}
+
+	@Override
+	public boolean close(String reason) {
+		if (super.close(reason)) {
+			// ensure all buffers in sendQueue are returned
+			for (ByteBuffer buf : sendQueue.pop())
+				getModel().getLocalNode().getBufferCache().tryReturnBuffer(buf);
+
+			return true;
+		}
+		return false;
 	}
 }

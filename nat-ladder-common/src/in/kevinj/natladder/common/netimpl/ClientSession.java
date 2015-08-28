@@ -23,11 +23,21 @@ import java.util.logging.Logger;
 public abstract class ClientSession {
 	protected static final Logger LOG = Logger.getLogger(ClientSession.class.getName());
 
+	// Protect against potential malicious attacks. 64KB maximum packet size.
+	// Enforce in receive and write to ensure legitimate packets aren't dropped.
+	// Raw packets larger than this will be forwarded in chunks with a size of
+	// BufferCache.DEFAULT_BUFFER_SIZE anyway, so this only really limits the
+	// maximum length of control packets.
+	protected static final int MAX_PACKET_LENGTH = 64 * 1024;
 	private static final int HEADER_LENGTH = Integer.SIZE / 8 + Short.SIZE / 8;
 	private static final int IDLE_TIME = 60000; //in milliseconds
 	private static final int TIMEOUT = 15000; //in milliseconds
 
 	public enum MessageType { HEADER, BODY, RAW }
+
+	static {
+		assert MAX_PACKET_LENGTH > BufferCache.DEFAULT_BUFFER_SIZE;
+	}
 
 	private class KeepAliveTask implements Runnable {
 		private final AtomicReference<ScheduledFuture<?>> future;
@@ -64,7 +74,7 @@ public abstract class ClientSession {
 	private final Runnable postClose;
 	private Runnable preClose;
 
-	private final AtomicBoolean closeEventsTriggered;
+	protected final AtomicBoolean closeEventsTriggered;
 	private ByteBuffer readBuffer;
 	private int readBufferOverflow;
 	private MessageType nextMessageType;
@@ -118,11 +128,14 @@ public abstract class ClientSession {
 		return readBuffer;
 	}
 
-	private byte[] readAll(ByteBuffer buf) {
-		buf.flip();
-		byte[] contents = new byte[buf.remaining()];
-		buf.get(contents);
-		return contents;
+	private void logDroppedPacket() {
+		if (LOG.isLoggable(Level.FINER)) {
+			readBuffer.flip();
+			byte[] contents = new byte[readBuffer.remaining()];
+			readBuffer.get(contents);
+
+			LOG.log(Level.FINER, "Dropped packet {0}", Arrays.toString(contents));
+		}
 	}
 
 	private boolean processHeader(int readBytes) {
@@ -136,22 +149,35 @@ public abstract class ClientSession {
 		readBuffer.flip();
 		assert readBuffer.remaining() == HEADER_LENGTH : readBuffer.remaining();
 		int recvPktRemaining = readBuffer.getInt();
-		model.setThisMessageDest(readBuffer.getShort());
+		short forwardTo = readBuffer.getShort();
 		assert !readBuffer.hasRemaining() : "HEADER_LENGTH too long for actual header";
-
 		readBuffer.clear();
-		if (model.isThisMessageForUs()) {
-			// prepare the buffer for parsing the message locally
-			if (readBuffer.remaining() < recvPktRemaining) {
-				// ensure we can get the entire packet in one pass
-				model.getLocalNode().getBufferCache().tryReturnBuffer(readBuffer);
-				readBuffer = ByteBuffer.allocate(recvPktRemaining);
+
+		try {
+			if (recvPktRemaining <= 0)
+				throw new IllegalStateException("Received non-positive length packet");
+			if (recvPktRemaining > MAX_PACKET_LENGTH - HEADER_LENGTH)
+				throw new IllegalStateException("Received too large packet");
+
+			model.setThisMessageDest(forwardTo);
+			if (model.isThisMessageForUs()) {
+				// prepare the buffer for parsing the message locally
+				if (readBuffer.remaining() < recvPktRemaining) {
+					// ensure we can get the entire packet in one pass
+					model.getLocalNode().getBufferCache().tryReturnBuffer(readBuffer);
+					readBuffer = ByteBuffer.allocate(recvPktRemaining);
+				}
+			} else {
+				// prepare the buffer for forwarding the message
+				RemoteNode nextNode = model.getNextNode();
+				if (nextNode != null && !nextNode.forwardRaw())
+					readBuffer.putInt(recvPktRemaining - Short.SIZE / 8);
 			}
-		} else {
-			// prepare the buffer for forwarding the message
-			RemoteNode nextNode = model.getNextNode();
-			if (nextNode != null && !nextNode.forwardRaw())
-				readBuffer.putInt(recvPktRemaining - Short.SIZE / 8);
+		} catch (Throwable t) {
+			LOG.log(Level.WARNING, "Error while processing packet header from " + model.getRemoteTypeString(), t);
+			// our state is inconsistent. we don't know how to handle what we're being dealt.
+			// there is no easy way out of this, so just kill ourself.
+			close(t.getMessage());
 		}
 
 		nextMessageType = MessageType.BODY;
@@ -174,13 +200,17 @@ public abstract class ClientSession {
 				return false;
 
 			// fully read the body and parse it
-			readBuffer.flip();
-			model.processControlPacket(new PacketParser(readBuffer) {
-				@Override
-				public void dispose() {
-					model.getLocalNode().getBufferCache().tryReturnBuffer(buf);
-				}
-			});
+			try {
+				readBuffer.flip();
+				model.processControlPacket(new PacketParser(readBuffer) {
+					@Override
+					public void dispose() {
+						model.getLocalNode().getBufferCache().tryReturnBuffer(buf);
+					}
+				});
+			} catch (Throwable t) {
+				LOG.log(Level.WARNING, "Error while processing control packet from " + model.getRemoteTypeString(), t);
+			}
 
 			// in case we had to allocate a bespoke non-direct buffer to handle
 			// a large command packet, we will throw out readBuffer since it will
@@ -193,14 +223,22 @@ public abstract class ClientSession {
 		} else {
 			// received message to be forwarded
 			int recvPktRemaining = readBufferOverflow + readBuffer.remaining();
-			RemoteNode nextNode = model.getNextNode();
-			if (nextNode == null) {
-				if (LOG.isLoggable(Level.FINER))
-					LOG.log(Level.FINER, "Dropped packet {0}", Arrays.toString(readAll(readBuffer)));
-				model.foundNextNodeCut();
-				model.getLocalNode().getBufferCache().tryReturnBuffer(readBuffer);
-			} else {
-				nextNode.getClientSession().writeMessage(readBuffer);
+			boolean bufferSafe = false;
+			try {
+				RemoteNode nextNode = model.getNextNode();
+				if (nextNode == null) {
+					model.foundNextNodeCut();
+					logDroppedPacket();
+				} else {
+					nextNode.getClientSession().writeMessage(readBuffer);
+					bufferSafe = true;
+				}
+			} catch (Throwable t) {
+				LOG.log(Level.WARNING, "Error while forwarding control packet from " + model.getRemoteTypeString(), t);
+				logDroppedPacket();
+			} finally {
+				if (!bufferSafe)
+					model.getLocalNode().getBufferCache().tryReturnBuffer(readBuffer);
 			}
 
 			// to minimize copying between buffers, we convert our current read buffer
@@ -236,25 +274,33 @@ public abstract class ClientSession {
 			throw new IllegalStateException("No pipe to exit node for " + SessionType.TERMINUS + " " + model.getRemoteCode());
 
 		int recvPktRemaining = readBuffer.remaining();
-		RemoteNode nextNode = model.getNextNode();
-		if (nextNode == null) {
-			if (LOG.isLoggable(Level.FINER))
-				LOG.log(Level.FINER, "Dropped packet {0}", Arrays.toString(readAll(readBuffer)));
-			model.foundNextNodeCut();
-			model.getLocalNode().getBufferCache().tryReturnBuffer(readBuffer);
-		} else {
-			// must first prefix packet with received packet length and the relay chain.
-			// TODO: if relayChain has changed since last message was received,
-			// make sure new and old relayChain are exactly the same lengths. otherwise,
-			// readBuffer has to have bytes shifted over to accommodate prefix.
-			if (relayChain.length != expectedRelayChainLength)
-				throw new UnsupportedOperationException("Relay chain length differs from expectations. Buffer shifting not yet implemented");
-
-			// calculate length of packet to forward.
-			readBuffer.putInt(0, readBuffer.position() - (Integer.SIZE / 8 + Short.SIZE / 8));
-			for (int i = 0; i < relayChain.length; i++)
-				readBuffer.putShort(Integer.SIZE / 8 + Short.SIZE / 8 * i, relayChain[i]);
-			nextNode.getClientSession().writeMessage(readBuffer);
+		boolean bufferSafe = false;
+		try {
+			RemoteNode nextNode = model.getNextNode();
+			if (nextNode == null) {
+				model.foundNextNodeCut();
+				logDroppedPacket();
+			} else {
+				// must first prefix packet with received packet length and the relay chain.
+				// TODO: if relayChain has changed since last message was received,
+				// make sure new and old relayChain are exactly the same lengths. otherwise,
+				// readBuffer has to have bytes shifted over to accommodate prefix.
+				if (relayChain.length != expectedRelayChainLength)
+					throw new UnsupportedOperationException("Relay chain length differs from expectations. Buffer shifting not yet implemented");
+	
+				// calculate length of packet to forward.
+				readBuffer.putInt(0, readBuffer.position() - (Integer.SIZE / 8 + Short.SIZE / 8));
+				for (int i = 0; i < relayChain.length; i++)
+					readBuffer.putShort(Integer.SIZE / 8 + Short.SIZE / 8 * i, relayChain[i]);
+				nextNode.getClientSession().writeMessage(readBuffer);
+				bufferSafe = true;
+			}
+		} catch (Throwable t) {
+			LOG.log(Level.WARNING, "Error while forwarding raw packet from " + model.getRemoteTypeString(), t);
+			logDroppedPacket();
+		} finally {
+			if (!bufferSafe)
+				model.getLocalNode().getBufferCache().tryReturnBuffer(readBuffer);
 		}
 
 		// to minimize copying between buffers, we convert our current read buffer

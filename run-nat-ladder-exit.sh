@@ -6,5 +6,5 @@ IDENTIFIER="test"
 PASSWORD="test"
 TERMINUS_HOST="localhost"
 TERMINUS_PORT=8080
-java -classpath $dp0"nat-ladder-common/bin:"$dp0"nat-ladder-client/bin" -ea in.kevinj.natladder.boundaryrelay.NatLadderExitNode $CENTRAL_RELAY_HOST $CENTRAL_RELAY_PORT $IDENTIFIER $PASSWORD $TERMINUS_HOST $TERMINUS_PORT
+java -classpath $dp0"nat-ladder-common/bin:"$dp0"nat-ladder-client/bin" -ea -Djava.util.logging.config.file=$dp0"logging.properties" in.kevinj.natladder.boundaryrelay.NatLadderExitNode $CENTRAL_RELAY_HOST $CENTRAL_RELAY_PORT $IDENTIFIER $PASSWORD $TERMINUS_HOST $TERMINUS_PORT
 #read -n1 -rsp $'Press any key to continue . . . \n'

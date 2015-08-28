@@ -61,10 +61,9 @@ public class RemoteRouter extends RemoteNode {
 		return sessionType;
 	}
 
-	@Override
-	protected ClientType getRemoteType() {
-		SessionType link = getSessionType();
-		ClientType us = getLocalNode().getLocalType();
+	public static ClientType getRemoteType(SessionType sessionType, LocalRouter localNode) {
+		SessionType link = sessionType;
+		ClientType us = localNode.getLocalType();
 		switch (us) {
 			case CENTRAL_RELAY:
 				switch (link) {
@@ -80,13 +79,18 @@ public class RemoteRouter extends RemoteNode {
 				if (link == SessionType.DOWNWARDS_RELAY && us == ClientType.ENTRY_NODE
 						|| link == SessionType.UPWARDS_RELAY && us == ClientType.EXIT_NODE)
 					return ClientType.CENTRAL_RELAY;
-				if (link == SessionType.DOWNWARDS_RELAY && us == ClientType.EXIT_NODE
-						|| link == SessionType.UPWARDS_RELAY && us == ClientType.ENTRY_NODE)
+				if (link == SessionType.TERMINUS && us == ClientType.EXIT_NODE
+						|| link == SessionType.TERMINUS && us == ClientType.ENTRY_NODE)
 					return null;
 				throw new IllegalStateException("Invalid session type " + link + " and client type " + us);
 			default:
 				throw new IllegalStateException("Invalid client type " + us);
 		}
+	}
+
+	@Override
+	protected ClientType getRemoteType() {
+		return getRemoteType(getSessionType(), getLocalNode());
 	}
 
 	private void setSessionType(SessionType sessionType) {
@@ -270,7 +274,7 @@ public class RemoteRouter extends RemoteNode {
 
 				// FIXME: implement command line interaction telling user to re-enter
 				// identifier and password to register with
-				LOG.log(Level.INFO, "Connection with {0} at {1} rejected: identifier in use", new Object[] { getRemoteTypeString(), getClientSession().getAddress() });
+				LOG.log(Level.INFO, "Connection with {0} ({1}) at {2} rejected: identifier in use", new Object[] { getRemoteTypeString(), null, getClientSession().getAddress() });
 				break;
 			case PacketHeaders.REJECTED_REASON_ID_NOT_IN_USE:
 			case PacketHeaders.REJECTED_REASON_WRONG_PASSWORD:
@@ -278,7 +282,7 @@ public class RemoteRouter extends RemoteNode {
 
 				// FIXME: implement command line interaction telling user to re-enter
 				// identifier and password to login with
-				LOG.log(Level.INFO, "Connection with {0} at {1} rejected: identifier or password incorrect", new Object[] { getRemoteTypeString(), getClientSession().getAddress() });
+				LOG.log(Level.INFO, "Connection with {0} ({1}) at {2} rejected: identifier or password incorrect", new Object[] { getRemoteTypeString(), null, getClientSession().getAddress() });
 				break;
 			default:
 				throw new IllegalStateException("Invalid rejected reason " + rejectedReason);
@@ -354,7 +358,7 @@ public class RemoteRouter extends RemoteNode {
 		}
 	}
 
-	private void processNewPipe(PacketParser packet) {
+	private void processMakePipe(PacketParser packet) {
 		assert getLocalNode().getLocalType() == ClientType.EXIT_NODE : getLocalNode().getLocalType();
 
 		short entryNodeCode = packet.readShort();
@@ -375,7 +379,7 @@ public class RemoteRouter extends RemoteNode {
 		// set our relay chain
 		getLocalNode().setProperty("RELAYCHAIN_" + ourTerminus, new short[] { exitNodeCode, terminusCode });
 		RemoteNode terminus = getNextNode(ourTerminus);
-		LOG.log(Level.INFO, "Connection with {0} at {1} piped through", new Object[] { terminus.getRemoteTypeString(), terminus.getClientSession().getAddress() });
+		LOG.log(Level.INFO, "Connection with {0} ({1}) at {2} piped through", new Object[] { terminus.getRemoteTypeString(), terminus.getRemoteCode(), terminus.getClientSession().getAddress() });
 	}
 
 	@Override
@@ -401,8 +405,8 @@ public class RemoteRouter extends RemoteNode {
 				case PacketHeaders.FOUND_CUT:
 					processFoundCut(packet);
 					break;
-				case PacketHeaders.NEW_PIPE:
-					processNewPipe(packet);
+				case PacketHeaders.MAKE_PIPE:
+					processMakePipe(packet);
 					break;
 				case PacketHeaders.PIPE_MADE:
 					processPipeMade(packet);

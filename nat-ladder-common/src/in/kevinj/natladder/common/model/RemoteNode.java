@@ -37,6 +37,8 @@ public class RemoteNode {
 	private boolean closeQuietly;
 
 	public RemoteNode(LocalRouter parentModel) {
+		assert parentModel != null;
+
 		this.parentModel = parentModel;
 	}
 
@@ -113,12 +115,15 @@ public class RemoteNode {
 		return null;
 	}
 
-	public String getRemoteTypeString() {
-		ClientType remoteType = getRemoteType();
+	public static String getRemoteTypeString(SessionType sessionType, ClientType remoteType) {
 		if (remoteType == null)
-			return getSessionType().toString();
+			return sessionType.toString();
 		else
 			return remoteType.toString();
+	}
+
+	public String getRemoteTypeString() {
+		return getRemoteTypeString(getSessionType(), getRemoteType());
 	}
 
 	public boolean forwardRaw() {
@@ -140,7 +145,7 @@ public class RemoteNode {
 			case ENTRY_NODE: {
 				short exitNodeCode = ((Short) properties.get("exitNodeCode")).shortValue();
 				getNextNode().getClientSession().packetBuilder(Byte.SIZE / 8 + Short.SIZE / 8 * 2, exitNodeCode, LocalRouter.CONTROL_CODE)
-					.writeByte(PacketHeaders.NEW_PIPE)
+					.writeByte(PacketHeaders.MAKE_PIPE)
 					.writeShort(getLocalNode().getLocalCode())
 					.writeShort(getRemoteCode())
 				.send();
@@ -148,9 +153,8 @@ public class RemoteNode {
 			}
 			case EXIT_NODE: {
 				short[] entryNodeRelayChain = (short[]) properties.get("entryNodeRelayChain");
-				// set our relay chain
+				// set our relay chain and relay chain reverse mapping
 				getLocalNode().setProperty("RELAYCHAIN_" + getRemoteCode(), entryNodeRelayChain);
-				// relay chain reverse mapping
 				getLocalNode().extendProperty("REVERSE_" + entryNodeRelayChain[0], getRemoteCode());
 				getNextNode().getClientSession().packetBuilder(Byte.SIZE / 8 + Short.SIZE / 8 * 3, entryNodeRelayChain[0], LocalRouter.CONTROL_CODE)
 					.writeByte(PacketHeaders.PIPE_MADE)
@@ -158,7 +162,7 @@ public class RemoteNode {
 					.writeShort(getLocalNode().getLocalCode())
 					.writeShort(getRemoteCode())
 				.send();
-				LOG.log(Level.INFO, "Connection with {0} at {1} piped through", new Object[] { getRemoteTypeString(), getClientSession().getAddress() });
+				LOG.log(Level.INFO, "Connection with {0} ({1}) at {2} piped through", new Object[] { getRemoteTypeString(), getRemoteCode(), getClientSession().getAddress() });
 				break;
 			}
 			default:
@@ -166,18 +170,45 @@ public class RemoteNode {
 		}
 	}
 
-	public RemoteNode getNextNode() {
-		assert getLocalNode().getLocalType() != ClientType.CENTRAL_RELAY : getLocalNode().getLocalType();
+	public static void onConnectFailed(LocalRouter localNode, SessionType sessionType, Map<String, Object> properties, Throwable ex) {
+		switch (localNode.getLocalType()) {
+			case ENTRY_NODE:
+				localNode.getClientManager().close("Failed to establish connection with " + getRemoteTypeString(sessionType, RemoteRouter.getRemoteType(sessionType, localNode)), ex);
+				break;
+			case EXIT_NODE:
+				switch (sessionType) {
+					case UPWARDS_RELAY:
+						localNode.getClientManager().close("Failed to establish connection with " + getRemoteTypeString(sessionType, RemoteRouter.getRemoteType(sessionType, localNode)), ex);
+						break;
+					case TERMINUS: {
+						LOG.log(Level.WARNING, "Failed to establish connection with " + getRemoteTypeString(sessionType, RemoteRouter.getRemoteType(sessionType, localNode)), ex);
+						break;
+					}
+					default:
+						throw new IllegalStateException("Invalid session type " + sessionType);
+				}
+				break;
+			default:
+				throw new IllegalStateException("Invalid client type " + localNode.getLocalType());
+		}
+	}
+
+	private static RemoteNode getNextNode(LocalRouter localNode) {
+		assert localNode.getLocalType() != ClientType.CENTRAL_RELAY : localNode.getLocalType();
 
 		// for terminus sessions, next node is just our connection to central relay
-		switch (getLocalNode().getLocalType()) {
+		switch (localNode.getLocalType()) {
 			case ENTRY_NODE:
-				return getLocalNode().getDownstream(ClientType.CENTRAL_RELAY_NODE_CODE);
+				return localNode.getDownstream(ClientType.CENTRAL_RELAY_NODE_CODE);
 			case EXIT_NODE:
-				return getLocalNode().getUpstream(ClientType.CENTRAL_RELAY_NODE_CODE);
+				return localNode.getUpstream(ClientType.CENTRAL_RELAY_NODE_CODE);
 			default:
-				throw new IllegalStateException("Invalid client type " + getLocalNode().getLocalType());
+				throw new IllegalStateException("Invalid client type " + localNode.getLocalType());
 		}
+	}
+
+	public RemoteNode getNextNode() {
+		return getNextNode(getLocalNode());
 	}
 
 	public void processControlPacket(PacketParser packet) {

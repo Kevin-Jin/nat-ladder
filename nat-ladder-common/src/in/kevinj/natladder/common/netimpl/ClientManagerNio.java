@@ -1,6 +1,5 @@
 package in.kevinj.natladder.common.netimpl;
 
-import in.kevinj.natladder.common.model.ClientType;
 import in.kevinj.natladder.common.model.LocalRouter;
 import in.kevinj.natladder.common.model.RemoteNode;
 import in.kevinj.natladder.common.model.SessionType;
@@ -173,6 +172,9 @@ public class ClientManagerNio implements ClientManager {
 		}
 
 		private void cleanupAll(Map<SelectionKey, ClientSessionNio> connected) {
+			synchronized (runInEventLoop) {
+				selector = null;
+			}
 			for (Iterator<Map.Entry<SelectionKey, ClientSessionNio>> iter = connected.entrySet().iterator(); iter.hasNext(); ) {
 				Map.Entry<SelectionKey, ClientSessionNio> item = iter.next();
 				iter.remove();
@@ -235,7 +237,7 @@ public class ClientManagerNio implements ClientManager {
 								else
 									close("Network event selector was manipulated outside of connect() and listen()", null);
 							if (key.isValid() && key.isConnectable() && (!(client = (SocketChannel) key.channel()).isConnectionPending() || client.finishConnect()))
-								if (pendingConnections.remove(key) == client && (newConnProps = newConnectionProps.get(key)) != null)
+								if (pendingConnections.remove(key) == client && (newConnProps = newConnectionProps.remove(key)) != null)
 									session = registerNewClient(client, connected, clientMakers.remove(key), newConnProps);
 								else
 									close("Network event selector was manipulated outside of connect() and listen()", null);
@@ -254,28 +256,10 @@ public class ClientManagerNio implements ClientManager {
 						} catch (ConnectException ex) {
 							pendingConnections.remove(key);
 							SessionType sessionType = clientMakers.remove(key).typeToMake();
+							newConnProps = newConnectionProps.remove(key);
 							if (sessionType == null)
 								throw new IllegalStateException("Invalid session type " + sessionType);
-
-							switch (model.getLocalType()) {
-								case ENTRY_NODE:
-									close("Failed to establish connection with " + ClientType.CENTRAL_RELAY, ex);
-									break;
-								case EXIT_NODE:
-									switch (sessionType) {
-										case UPWARDS_RELAY:
-											close("Failed to establish connection with " + ClientType.CENTRAL_RELAY, ex);
-											break;
-										case TERMINUS:
-											close("Failed to establish connection with terminus", ex);
-											break;
-										default:
-											throw new IllegalStateException("Invalid session type " + sessionType);
-									}
-									break;
-								default:
-									throw new IllegalStateException("Invalid client type " + model.getLocalType());
-							}
+							RemoteNode.onConnectFailed(model, sessionType, newConnProps, ex);
 						} catch (Throwable ex) {
 							// the show must go on. don't let any single iteration spoil our event loop.
 							if (session != null)
@@ -304,6 +288,12 @@ public class ClientManagerNio implements ClientManager {
 		closeEventsTriggered = new AtomicBoolean(false);
 		eventLoop = new EventLoopTask();
 		eventLoopThreadPool.submit(eventLoop);
+		Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
+			@Override
+			public void run() {
+				close("JVM shut down", null);
+			}
+		}));
 	}
 
 	@Override
@@ -321,6 +311,9 @@ public class ClientManagerNio implements ClientManager {
 	// TODO: properties is not type-safe and a code smell. replace functionality with polymorphism somehow.
 	@Override
 	public void listen(RemoteNode.RemoteNodeFactory clientMaker, String host, int port, Map<String, Object> properties) {
+		if (isShutdown())
+			return;
+
 		SocketAddress address = new InetSocketAddress(host, port);
 		try {
 			ServerSocketChannel listener = ServerSocketChannel.open();
@@ -336,6 +329,9 @@ public class ClientManagerNio implements ClientManager {
 	// TODO: properties is not type-safe and a code smell. replace functionality with polymorphism somehow.
 	@Override
 	public void connect(RemoteNode.RemoteNodeFactory clientMaker, String host, int port, Map<String, Object> properties) {
+		if (isShutdown())
+			return;
+
 		SocketAddress address = new InetSocketAddress(host, port);
 		try {
 			SocketChannel speaker = SocketChannel.open();

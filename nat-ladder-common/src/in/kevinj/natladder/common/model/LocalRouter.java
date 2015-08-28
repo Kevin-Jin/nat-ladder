@@ -7,6 +7,8 @@ import in.kevinj.natladder.common.util.ScheduledHashedWheelExecutor;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.Map;
@@ -40,9 +42,16 @@ public abstract class LocalRouter {
 	public LocalRouter(ClientType localType) {
 		this.localType = localType;
 		properties = new HashMap<String, Object>();
-		upstreamNodes = new TreeMap<Short, RemoteNode>();
+		// upstream node codes are positive. lastKey() should return the highest magnitude positive number.
+		upstreamNodes = new TreeMap<Short, RemoteNode>(new Comparator<Short>() {
+			@Override
+			public int compare(Short o1, Short o2) {
+				return o1.compareTo(o2);
+			}
+		});
 		upstreamNodeCodeGaps = new LinkedList<Short>();
-		downstreamNodes = new TreeMap<Short, RemoteNode>();
+		// downstream node codes are negative. lastKey() should return the highest magnitude negative number.
+		downstreamNodes = new TreeMap<Short, RemoteNode>(Collections.reverseOrder());
 		downstreamNodeCodeGaps = new LinkedList<Short>();
 		bufferCache = new BufferCache();
 		wheelTimer = new ScheduledHashedWheelExecutor();
@@ -126,7 +135,10 @@ public abstract class LocalRouter {
 
 		short nodeCode;
 		if (node.isRemoteCodeSet())
-			nodeCode = node.getRemoteCode();
+			if (!nodes.containsKey(Short.valueOf(node.getRemoteCode())))
+				nodeCode = node.getRemoteCode();
+			else
+				throw new IllegalStateException(node.getRemoteCode() + " is already registered.");
 		else if (!gaps.isEmpty())
 			nodeCode = gaps.remove();
 		else if (nodes.isEmpty())
@@ -143,17 +155,21 @@ public abstract class LocalRouter {
 		short nodeCode;
 		switch (node.getSessionType()) {
 			case UPWARDS_RELAY:
+				assert !node.isRemoteCodeSet() || getLocalType() == ClientType.EXIT_NODE && node.getRemoteCode() == ClientType.CENTRAL_RELAY_NODE_CODE : getLocalType() + " " + node.getRemoteCode();
 				nodeCode = registerNode(upstreamNodes, upstreamNodeCodeGaps, node, (short) 1);
 				break;
 			case DOWNWARDS_RELAY:
+				assert !node.isRemoteCodeSet() || getLocalType() == ClientType.ENTRY_NODE && node.getRemoteCode() == ClientType.CENTRAL_RELAY_NODE_CODE : getLocalType() + " " + node.getRemoteCode();
 				nodeCode = registerNode(downstreamNodes, downstreamNodeCodeGaps, node, (short) -1);
 				break;
 			case TERMINUS:
 				switch (getLocalType()) {
 					case ENTRY_NODE:
+						assert !node.isRemoteCodeSet() : node.isRemoteCodeSet();
 						nodeCode = registerNode(upstreamNodes, upstreamNodeCodeGaps, node, (short) 1);
 						break;
 					case EXIT_NODE:
+						assert !node.isRemoteCodeSet() : node.isRemoteCodeSet();
 						nodeCode = registerNode(downstreamNodes, downstreamNodeCodeGaps, node, (short) -1);
 						break;
 					default:
@@ -168,21 +184,27 @@ public abstract class LocalRouter {
 
 	private synchronized RemoteNode deregisterNode(SortedMap<Short, RemoteNode> nodes, Queue<Short> gaps, short nodeCode) {
 		Short oNodeCode = Short.valueOf(nodeCode);
-		gaps.add(oNodeCode);
+		// don't add nodeCode to gaps if auto increment will take care of it
+		if (!nodes.isEmpty() && nodes.comparator().compare(oNodeCode, nodes.lastKey()) < 0)
+			gaps.add(oNodeCode);
 		return nodes.remove(oNodeCode);
 	}
 
 	public RemoteNode deregisterNode(SessionType sessionType, short nodeCode) {
 		switch (sessionType) {
 			case UPWARDS_RELAY:
+				assert getLocalType() == ClientType.CENTRAL_RELAY && nodeCode > 0 || getLocalType() == ClientType.EXIT_NODE && nodeCode == ClientType.CENTRAL_RELAY_NODE_CODE;
 				return deregisterNode(upstreamNodes, upstreamNodeCodeGaps, nodeCode);
 			case DOWNWARDS_RELAY:
+				assert getLocalType() == ClientType.CENTRAL_RELAY && nodeCode < 0 || getLocalType() == ClientType.ENTRY_NODE && nodeCode == ClientType.CENTRAL_RELAY_NODE_CODE;
 				return deregisterNode(downstreamNodes, downstreamNodeCodeGaps, nodeCode);
 			case TERMINUS:
 				switch (getLocalType()) {
 					case ENTRY_NODE:
+						assert nodeCode > 0;
 						return deregisterNode(upstreamNodes, upstreamNodeCodeGaps, nodeCode);
 					case EXIT_NODE:
+						assert nodeCode < 0;
 						return deregisterNode(downstreamNodes, downstreamNodeCodeGaps, nodeCode);
 					default:
 						throw new IllegalStateException("Invalid client type " + getLocalType());
