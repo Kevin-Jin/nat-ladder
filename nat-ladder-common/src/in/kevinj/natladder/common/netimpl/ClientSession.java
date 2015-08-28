@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-public abstract class ClientSession {
+public abstract class ClientSession<T extends LocalRouter<T>> {
 	protected static final Logger LOG = Logger.getLogger(ClientSession.class.getName());
 
 	// Protect against potential malicious attacks. 64KB maximum packet size.
@@ -70,7 +70,7 @@ public abstract class ClientSession {
 		}
 	}
 
-	private final RemoteNode model;
+	private final RemoteNode<T> model;
 	private final Runnable postClose;
 	private Runnable preClose;
 
@@ -85,7 +85,7 @@ public abstract class ClientSession {
 	private final Runnable idleTask;
 	private ScheduledFuture<?> idleTaskFuture;
 
-	public ClientSession(RemoteNode model, Runnable onClose) {
+	public ClientSession(RemoteNode<T> model, Runnable onClose) {
 		this.model = model;
 		this.postClose = onClose;
 
@@ -114,7 +114,7 @@ public abstract class ClientSession {
 		}
 	}
 
-	protected RemoteNode getModel() {
+	protected RemoteNode<T> getModel() {
 		return model;
 	}
 
@@ -169,7 +169,7 @@ public abstract class ClientSession {
 				}
 			} else {
 				// prepare the buffer for forwarding the message
-				RemoteNode nextNode = model.getNextNode();
+				RemoteNode<T> nextNode = model.getNextNode();
 				if (nextNode != null && !nextNode.forwardRaw())
 					readBuffer.putInt(recvPktRemaining - Short.SIZE / 8);
 			}
@@ -225,7 +225,7 @@ public abstract class ClientSession {
 			int recvPktRemaining = readBufferOverflow + readBuffer.remaining();
 			boolean bufferSafe = false;
 			try {
-				RemoteNode nextNode = model.getNextNode();
+				RemoteNode<T> nextNode = model.getNextNode();
 				if (nextNode == null) {
 					model.foundNextNodeCut();
 					logDroppedPacket();
@@ -276,7 +276,7 @@ public abstract class ClientSession {
 		int recvPktRemaining = readBuffer.remaining();
 		boolean bufferSafe = false;
 		try {
-			RemoteNode nextNode = model.getNextNode();
+			RemoteNode<T> nextNode = model.getNextNode();
 			if (nextNode == null) {
 				model.foundNextNodeCut();
 				logDroppedPacket();

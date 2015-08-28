@@ -1,5 +1,6 @@
 package in.kevinj.natladder.common.netimpl;
 
+import in.kevinj.natladder.common.model.LocalRouter;
 import in.kevinj.natladder.common.model.RemoteNode;
 import in.kevinj.natladder.common.util.UnorderedQueue;
 
@@ -13,12 +14,12 @@ import java.nio.channels.SocketChannel;
 import java.util.Iterator;
 import java.util.logging.Level;
 
-public class ClientSessionNio extends ClientSession {
+public class ClientSessionNio<T extends LocalRouter<T>> extends ClientSession<T> {
 	private final SocketChannel commChn;
 	private final SelectionKey selectionKey;
 	private final UnorderedQueue sendQueue;
 
-	public ClientSessionNio(RemoteNode model, SocketChannel channel, SelectionKey acceptedKey, Runnable onClose) {
+	public ClientSessionNio(RemoteNode<T> model, SocketChannel channel, SelectionKey acceptedKey, Runnable onClose) {
 		super(model, onClose);
 		commChn = channel;
 		selectionKey = acceptedKey;

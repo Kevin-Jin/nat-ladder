@@ -8,42 +8,28 @@ import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-public class RemoteNode {
+public class RemoteNode<T extends LocalRouter<T>> {
 	protected static final Logger LOG = Logger.getLogger(RemoteNode.class.getName());
 
-	public interface RemoteNodeFactory {
-		public RemoteNode make(LocalRouter parentModel);
+	public interface RemoteNodeFactory<T extends LocalRouter<T>> {
+		public RemoteNode<T> make(T parentModel);
 		public SessionType typeToMake();
 	}
 
-	public static final RemoteNodeFactory externalNodeFactory = new RemoteNodeFactory() {
-		@Override
-		public RemoteNode make(LocalRouter parentModel) {
-			RemoteNode node = new RemoteNode(parentModel);
-			node.setRemoteCode(parentModel.registerNode(node));
-			return node;
-		}
+	private final T parentModel;
 
-		@Override
-		public SessionType typeToMake() {
-			return SessionType.TERMINUS;
-		}
-	};
-
-	private final LocalRouter parentModel;
-
-	private ClientSession session;
+	private ClientSession<T> session;
 	private short itsNodeCode;
 	private boolean isNodeCodeSet;
 	private boolean closeQuietly;
 
-	public RemoteNode(LocalRouter parentModel) {
+	public RemoteNode(T parentModel) {
 		assert parentModel != null;
 
 		this.parentModel = parentModel;
 	}
 
-	public void setClientSession(ClientSession session) {
+	public void setClientSession(ClientSession<T> session) {
 		this.session = session;
 		session.setPreClose(new Runnable() {
 			@Override
@@ -98,7 +84,7 @@ public class RemoteNode {
 		.send();
 	}
 
-	public ClientSession getClientSession() {
+	public ClientSession<T> getClientSession() {
 		return session;
 	}
 
@@ -121,7 +107,7 @@ public class RemoteNode {
 		return itsNodeCode;
 	}
 
-	public LocalRouter getLocalNode() {
+	public T getLocalNode() {
 		return parentModel;
 	}
 
@@ -203,7 +189,7 @@ public class RemoteNode {
 		}
 	}
 
-	public static void onConnectFailed(LocalRouter localNode, SessionType sessionType, Map<String, Object> properties, Throwable ex) {
+	public static <T extends LocalRouter<T>> void onConnectFailed(T localNode, SessionType sessionType, Map<String, Object> properties, Throwable ex) {
 		switch (localNode.getLocalType()) {
 			case ENTRY_NODE:
 				localNode.getClientManager().close("Failed to establish connection with " + getRemoteTypeString(sessionType, RemoteRouter.getRemoteType(sessionType, localNode)), ex);
@@ -231,7 +217,7 @@ public class RemoteNode {
 		}
 	}
 
-	private static RemoteNode getNextNode(LocalRouter localNode) {
+	private static <T extends LocalRouter<T>> RemoteNode<T> getNextNode(T localNode) {
 		assert localNode.getLocalType() != ClientType.CENTRAL_RELAY : localNode.getLocalType();
 
 		// for terminus sessions, next node is just our connection to central relay
@@ -245,7 +231,7 @@ public class RemoteNode {
 		}
 	}
 
-	public RemoteNode getNextNode() {
+	public RemoteNode<T> getNextNode() {
 		return getNextNode(getLocalNode());
 	}
 
@@ -261,7 +247,7 @@ public class RemoteNode {
 		getLocalNode().getClientManager().close("Lost connection to " + ClientType.CENTRAL_RELAY, null);
 	}
 
-	protected static void disposeOnCentralRelay(LocalRouter localNode, SessionType sessionType, short nodeCode, boolean quiet) {
+	protected static <T extends LocalRouter<T>> void disposeOnCentralRelay(LocalRouter<T> localNode, SessionType sessionType, short nodeCode, boolean quiet) {
 		assert localNode.getLocalType() == ClientType.CENTRAL_RELAY : localNode.getLocalType();
 
 		switch (sessionType) {
@@ -270,7 +256,7 @@ public class RemoteNode {
 				EntryNodeInfo info = (EntryNodeInfo) localNode.removeProperty("ENTRY_" + nodeCode);
 				if (info != null) {
 					ExitNodeInfo exitNode = (ExitNodeInfo) localNode.getProperty("EXIT_" + info.connectedExitNode);
-					RemoteNode downstream = localNode.getDownstream(info.connectedExitNode);
+					RemoteNode<T> downstream = localNode.getDownstream(info.connectedExitNode);
 					if (exitNode != null && downstream != null) {
 						exitNode.connectedEntryNodes.remove(Short.valueOf(nodeCode));
 						if (!quiet)
@@ -292,7 +278,7 @@ public class RemoteNode {
 					localNode.removeProperty("EXITNAME_" + info.identifier);
 					for (Short connectedEntryNode : info.connectedEntryNodes) {
 						EntryNodeInfo entryNode = (EntryNodeInfo) localNode.getProperty("ENTRY_" + connectedEntryNode);
-						RemoteNode upstream = localNode.getUpstream(connectedEntryNode.shortValue());
+						RemoteNode<T> upstream = localNode.getUpstream(connectedEntryNode.shortValue());
 						if (entryNode != null && upstream != null) {
 							entryNode.isLameDuck = true;
 							if (!quiet)
@@ -322,7 +308,7 @@ public class RemoteNode {
 				switch (getSessionType()) {
 					case TERMINUS: {
 						// disconnecting from terminus. send message through central relay to notify opposite end.
-						RemoteNode centralRelay = getNextNode();
+						RemoteNode<T> centralRelay = getNextNode();
 						if (!closeQuietly && centralRelay != null)
 							centralRelay.notifyFoundCutExternal(getRemoteCode());
 						// deregister TERMINUS

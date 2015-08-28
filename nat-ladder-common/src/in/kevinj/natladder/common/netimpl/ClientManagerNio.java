@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-public class ClientManagerNio implements ClientManager {
+public class ClientManagerNio<T extends LocalRouter<T>> implements ClientManager<T> {
 	private static final Logger LOG = Logger.getLogger(ClientManagerNio.class.getName());
 
 	private final ExecutorService eventLoopThreadPool = Executors.newSingleThreadExecutor(new ThreadFactory() {
@@ -58,7 +58,7 @@ public class ClientManagerNio implements ClientManager {
 		private Selector selector;
 		private final Map<SelectionKey, ServerSocketChannel> listeners;
 		private final Map<SelectionKey, SocketChannel> pendingConnections;
-		private final Map<SelectionKey, RemoteNode.RemoteNodeFactory> clientMakers;
+		private final Map<SelectionKey, RemoteNode.RemoteNodeFactory<T>> clientMakers;
 		private final Map<SelectionKey, Map<String, Object>> newConnectionProps;
 		private final List<Runnable> runInEventLoop;
 
@@ -66,7 +66,7 @@ public class ClientManagerNio implements ClientManager {
 			listeners = new HashMap<SelectionKey, ServerSocketChannel>();
 			pendingConnections = new HashMap<SelectionKey, SocketChannel>();
 			newConnectionProps = new HashMap<SelectionKey, Map<String, Object>>();
-			clientMakers = new HashMap<SelectionKey, RemoteNode.RemoteNodeFactory>();
+			clientMakers = new HashMap<SelectionKey, RemoteNode.RemoteNodeFactory<T>>();
 			runInEventLoop = new ArrayList<Runnable>();
 		}
 
@@ -80,7 +80,7 @@ public class ClientManagerNio implements ClientManager {
 			}
 		}
 
-		public void addConnector(final SocketAddress address, final RemoteNode.RemoteNodeFactory clientMaker, final SocketChannel socket, final Map<String, Object> properties) {
+		public void addConnector(final SocketAddress address, final RemoteNode.RemoteNodeFactory<T> clientMaker, final SocketChannel socket, final Map<String, Object> properties) {
 			invokeLater(new Runnable() {
 				@Override
 				public void run() {
@@ -98,7 +98,7 @@ public class ClientManagerNio implements ClientManager {
 			});
 		}
 
-		public void addAcceptor(final SocketAddress address, final RemoteNode.RemoteNodeFactory clientMaker, final ServerSocketChannel socket, final Map<String, Object> properties) {
+		public void addAcceptor(final SocketAddress address, final RemoteNode.RemoteNodeFactory<T> clientMaker, final ServerSocketChannel socket, final Map<String, Object> properties) {
 			invokeLater(new Runnable() {
 				@Override
 				public void run() {
@@ -128,13 +128,13 @@ public class ClientManagerNio implements ClientManager {
 			});
 		}
 
-		private ClientSessionNio registerNewClient(SocketChannel client, final Map<SelectionKey, ClientSessionNio> connected, RemoteNode.RemoteNodeFactory clientMaker, Map<String, Object> properties) {
+		private ClientSessionNio<T> registerNewClient(SocketChannel client, final Map<SelectionKey, ClientSessionNio<T>> connected, RemoteNode.RemoteNodeFactory<T> clientMaker, Map<String, Object> properties) {
 			try {
 				client.socket().setTcpNoDelay(true);
 				client.configureBlocking(false);
 				final SelectionKey acceptedKey = client.register(selector, SelectionKey.OP_READ);
-				RemoteNode clientState = clientMaker.make(model);
-				ClientSessionNio session = new ClientSessionNio(clientState, client, acceptedKey, new Runnable() {
+				RemoteNode<T> clientState = clientMaker.make(model);
+				ClientSessionNio<T> session = new ClientSessionNio<T>(clientState, client, acceptedKey, new Runnable() {
 					@Override
 					public void run() {
 						connected.remove(acceptedKey);
@@ -152,7 +152,7 @@ public class ClientManagerNio implements ClientManager {
 			}
 		}
 
-		private void readForClient(SocketChannel client, ClientSessionNio session) {
+		private void readForClient(SocketChannel client, ClientSessionNio<T> session) {
 			try {
 				int read = client.read(session.readBuffer());
 				while (session.readMessage(read)) {
@@ -166,17 +166,17 @@ public class ClientManagerNio implements ClientManager {
 			}
 		}
 
-		private void writeForClient(SocketChannel client, ClientSessionNio session, SelectionKey key) {
+		private void writeForClient(SocketChannel client, ClientSessionNio<T> session, SelectionKey key) {
 			if (session.tryFlushSendQueue() == 1)
 				key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);
 		}
 
-		private void cleanupAll(Map<SelectionKey, ClientSessionNio> connected) {
+		private void cleanupAll(Map<SelectionKey, ClientSessionNio<T>> connected) {
 			synchronized (runInEventLoop) {
 				selector = null;
 			}
-			for (Iterator<Map.Entry<SelectionKey, ClientSessionNio>> iter = connected.entrySet().iterator(); iter.hasNext(); ) {
-				Map.Entry<SelectionKey, ClientSessionNio> item = iter.next();
+			for (Iterator<Map.Entry<SelectionKey, ClientSessionNio<T>>> iter = connected.entrySet().iterator(); iter.hasNext(); ) {
+				Map.Entry<SelectionKey, ClientSessionNio<T>> item = iter.next();
 				iter.remove();
 				item.getKey().cancel();
 				item.getValue().close("Network event selector shutdown");
@@ -207,7 +207,7 @@ public class ClientManagerNio implements ClientManager {
 		@Override
 		public void run() {
 			// allows type safety, unlike SelectionKey.attach()
-			Map<SelectionKey, ClientSessionNio> connected = new ConcurrentHashMap<SelectionKey, ClientSessionNio>();
+			Map<SelectionKey, ClientSessionNio<T>> connected = new ConcurrentHashMap<SelectionKey, ClientSessionNio<T>>();
 			try {
 				selector = Selector.open();
 				// in case !runInEventLoop.isEmpty()
@@ -229,7 +229,7 @@ public class ClientManagerNio implements ClientManager {
 						ServerSocketChannel listener;
 						SocketChannel client = null;
 						Map<String, Object> newConnProps;
-						ClientSessionNio session = null;
+						ClientSessionNio<T> session = null;
 						try {
 							if (key.isValid() && key.isAcceptable())
 								if ((listener = listeners.get(key)) != null && (newConnProps = newConnectionProps.get(key)) != null)
@@ -278,12 +278,12 @@ public class ClientManagerNio implements ClientManager {
 		}
 	}
 
-	private final LocalRouter model;
+	private final T model;
 
 	private final AtomicBoolean closeEventsTriggered;
 	private final EventLoopTask eventLoop;
 
-	public ClientManagerNio(LocalRouter thisState) {
+	public ClientManagerNio(T thisState) {
 		model = thisState;
 		closeEventsTriggered = new AtomicBoolean(false);
 		eventLoop = new EventLoopTask();
@@ -310,7 +310,7 @@ public class ClientManagerNio implements ClientManager {
 
 	// TODO: properties is not type-safe and a code smell. replace functionality with polymorphism somehow.
 	@Override
-	public void listen(RemoteNode.RemoteNodeFactory clientMaker, String host, int port, Map<String, Object> properties) {
+	public void listen(RemoteNode.RemoteNodeFactory<T> clientMaker, String host, int port, Map<String, Object> properties) {
 		if (isShutdown())
 			return;
 
@@ -328,7 +328,7 @@ public class ClientManagerNio implements ClientManager {
 
 	// TODO: properties is not type-safe and a code smell. replace functionality with polymorphism somehow.
 	@Override
-	public void connect(RemoteNode.RemoteNodeFactory clientMaker, String host, int port, Map<String, Object> properties) {
+	public void connect(RemoteNode.RemoteNodeFactory<T> clientMaker, String host, int port, Map<String, Object> properties) {
 		if (isShutdown())
 			return;
 

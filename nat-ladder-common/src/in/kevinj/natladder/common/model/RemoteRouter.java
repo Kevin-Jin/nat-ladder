@@ -8,53 +8,12 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.logging.Level;
 
-public class RemoteRouter extends RemoteNode {
-	public static final RemoteNodeFactory internalNodeFactory = new RemoteNodeFactory() {
-		@Override
-		public RemoteNode make(LocalRouter parentModel) {
-			return new RemoteRouter(parentModel);
-		}
-
-		@Override
-		public SessionType typeToMake() {
-			return null;
-		}
-	};
-
-	public static final RemoteNodeFactory upwardsRelayFactory = new RemoteNodeFactory() {
-		@Override
-		public RemoteNode make(LocalRouter parentModel) {
-			return new RemoteRouter(parentModel, SessionType.UPWARDS_RELAY);
-		}
-
-		@Override
-		public SessionType typeToMake() {
-			return SessionType.UPWARDS_RELAY;
-		}
-	};
-
-	public static final RemoteNodeFactory downwardsRelayFactory = new RemoteNodeFactory() {
-		@Override
-		public RemoteNode make(LocalRouter parentModel) {
-			return new RemoteRouter(parentModel, SessionType.DOWNWARDS_RELAY);
-		}
-
-		@Override
-		public SessionType typeToMake() {
-			return SessionType.DOWNWARDS_RELAY;
-		}
-	};
-
+public class RemoteRouter<T extends LocalRouter<T>> extends RemoteNode<T> {
 	private SessionType sessionType;
 	private short thisMessageDest;
 
-	public RemoteRouter(LocalRouter parentModel) {
+	public RemoteRouter(T parentModel) {
 		super(parentModel);
-	}
-
-	public RemoteRouter(LocalRouter parentModel, SessionType sessionType) {
-		this(parentModel);
-		this.sessionType = sessionType;
 	}
 
 	@Override
@@ -62,7 +21,7 @@ public class RemoteRouter extends RemoteNode {
 		return sessionType;
 	}
 
-	public static ClientType getRemoteType(SessionType sessionType, LocalRouter localNode) {
+	public static <T extends LocalRouter<T>> ClientType getRemoteType(SessionType sessionType, T localNode) {
 		SessionType link = sessionType;
 		ClientType us = localNode.getLocalType();
 		switch (us) {
@@ -94,7 +53,7 @@ public class RemoteRouter extends RemoteNode {
 		return getRemoteType(getSessionType(), getLocalNode());
 	}
 
-	private void setSessionType(SessionType sessionType) {
+	protected void setSessionType(SessionType sessionType) {
 		if (getSessionType() != null || sessionType == SessionType.TERMINUS || sessionType == null)
 			throw new IllegalStateException("Invalid session type " + sessionType + " (to replace " + getSessionType() + ")");
 
@@ -151,7 +110,7 @@ public class RemoteRouter extends RemoteNode {
 		}
 	}
 
-	private RemoteNode getNextNode(short nodeCode) {
+	private RemoteNode<T> getNextNode(short nodeCode) {
 		if (getSessionType() == null)
 			throw new IllegalStateException("Received forward request before IDENTIFY");
 
@@ -166,7 +125,7 @@ public class RemoteRouter extends RemoteNode {
 	}
 
 	@Override
-	public RemoteNode getNextNode() {
+	public RemoteNode<T> getNextNode() {
 		return getNextNode(thisMessageDest);
 	}
 
@@ -249,7 +208,7 @@ public class RemoteRouter extends RemoteNode {
 			case ENTRY_NODE: {
 				int portNumber = packet.readInt();
 				short exitNodeCode = packet.readShort();
-				getLocalNode().getClientManager().listen(externalNodeFactory,
+				getLocalNode().getClientManager().listen(getLocalNode().externalNodeFactory(),
 					"0.0.0.0",
 					portNumber,
 					Collections.<String, Object>singletonMap("exitNodeCode", Short.valueOf(exitNodeCode))
@@ -310,7 +269,7 @@ public class RemoteRouter extends RemoteNode {
 						if (ourTermini == null || !ourTermini.remove(Short.valueOf(ourTerminus)))
 							throw new IllegalStateException("Inconsistent state in RELAYCHAIN_ or REVERSE_ (node code: " + ourTerminus + ")");
 
-						RemoteNode externalConn = getLocalNode().getDownstream(ourTerminus);
+						RemoteNode<T> externalConn = getLocalNode().getDownstream(ourTerminus);
 						if (externalConn != null)
 							// we're being notified by CENTRAL_RELAY. no need to echo back the cut notification to CENTRAL_RELAY
 							externalConn.quietClose("Lost connection on source node");
@@ -321,7 +280,7 @@ public class RemoteRouter extends RemoteNode {
 					case DOWNWARDS_RELAY: {
 						assert getLocalNode().getLocalType() == ClientType.ENTRY_NODE : getLocalNode().getLocalType();
 
-						RemoteNode externalConn = getLocalNode().getUpstream(ourTerminus);
+						RemoteNode<T> externalConn = getLocalNode().getUpstream(ourTerminus);
 						if (externalConn != null)
 							// we're being notified by CENTRAL_RELAY. no need to echo back the cut notification to CENTRAL_RELAY
 							externalConn.quietClose("Lost connection on source node");
@@ -342,7 +301,7 @@ public class RemoteRouter extends RemoteNode {
 
 						// cut terminus connections that relay through the provided entry node
 						Collection<?> ourTermini = (Collection<?>) getLocalNode().removeProperty("REVERSE_" + otherNode);
-						RemoteNode node;
+						RemoteNode<T> node;
 						if (ourTermini != null)
 							// at least one pipe exists through the entry node
 							for (Object ourTerminus : ourTermini)
@@ -380,7 +339,7 @@ public class RemoteRouter extends RemoteNode {
 		short entryNodeCode = packet.readShort();
 		short terminusCode = packet.readShort();
 		getLocalNode().extendProperty("INPROGRESS_" + entryNodeCode, Short.valueOf(terminusCode));
-		getLocalNode().getClientManager().connect(externalNodeFactory,
+		getLocalNode().getClientManager().connect(getLocalNode().externalNodeFactory(),
 			(String) getLocalNode().getProperty("terminusHost"),
 			((Integer) getLocalNode().getProperty("terminusPort")).intValue(),
 			Collections.<String, Object>singletonMap("entryNodeRelayChain", new short[] { entryNodeCode, terminusCode })
@@ -395,7 +354,7 @@ public class RemoteRouter extends RemoteNode {
 		short theirTerminus = packet.readShort();
 		// set our relay chain
 		getLocalNode().setProperty("RELAYCHAIN_" + ourTerminus, new short[] { exitNodeCode, theirTerminus });
-		RemoteNode terminus = getNextNode(ourTerminus);
+		RemoteNode<T> terminus = getNextNode(ourTerminus);
 		LOG.log(Level.INFO, "Connection with {0} ({1}) at {2} piped through", new Object[] { terminus.getRemoteTypeString(), terminus.getRemoteCode(), terminus.getClientSession().getAddress() });
 	}
 
@@ -403,7 +362,7 @@ public class RemoteRouter extends RemoteNode {
 		switch (getLocalNode().getLocalType()) {
 			case ENTRY_NODE: {
 				short ourTerminus = packet.readShort();
-				RemoteNode terminus = getNextNode(ourTerminus);
+				RemoteNode<T> terminus = getNextNode(ourTerminus);
 				terminus.quietClose("Lost connection on source nocde");
 				break;
 			}

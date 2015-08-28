@@ -1,6 +1,5 @@
 package in.kevinj.natladder.centralrelay;
 
-import in.kevinj.natladder.common.model.RemoteRouter;
 import in.kevinj.natladder.common.netimpl.ClientManager;
 import in.kevinj.natladder.common.netimpl.ClientManagerNio;
 import in.kevinj.natladder.common.util.CliHelper;
@@ -16,8 +15,8 @@ public class NatLadderCentralRelay {
 		int centralRelayPort = CliHelper.tryParse(args, 1, CENTRAL_RELAY_PORT);
 
 		CentralRelayClientRegistry state = new CentralRelayClientRegistry();
-		ClientManager eventLoop = new ClientManagerNio(state);
+		ClientManager<CentralRelayClientRegistry> eventLoop = new ClientManagerNio<CentralRelayClientRegistry>(state);
 		state.setClientManager(eventLoop);
-		eventLoop.listen(RemoteRouter.internalNodeFactory, centralRelayHost, centralRelayPort, Collections.<String, Object>emptyMap());
+		eventLoop.listen(state.internalNodeFactory(), centralRelayHost, centralRelayPort, Collections.<String, Object>emptyMap());
 	}
 }

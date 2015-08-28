@@ -1,5 +1,6 @@
 package in.kevinj.natladder.common.model;
 
+import in.kevinj.natladder.common.model.RemoteNode.RemoteNodeFactory;
 import in.kevinj.natladder.common.netimpl.BufferCache;
 import in.kevinj.natladder.common.netimpl.ClientManager;
 import in.kevinj.natladder.common.util.ScheduledHashedWheelExecutor;
@@ -19,18 +20,18 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-public abstract class LocalRouter {
+public abstract class LocalRouter<T extends LocalRouter<T>> {
 	protected static final Logger LOG = Logger.getLogger(LocalRouter.class.getName());
 
 	public static final short CONTROL_CODE = 0;
 
 	private final ClientType localType;
-	private ClientManager clientManager;
+	private ClientManager<T> clientManager;
 
 	private final Map<String, Object> properties;
-	private final SortedMap<Short, RemoteNode> upstreamNodes;
+	private final SortedMap<Short, RemoteNode<T>> upstreamNodes;
 	private final Queue<Short> upstreamNodeCodeGaps;
-	private final SortedMap<Short, RemoteNode> downstreamNodes;
+	private final SortedMap<Short, RemoteNode<T>> downstreamNodes;
 	private final Queue<Short> downstreamNodeCodeGaps;
 
 	private final BufferCache bufferCache;
@@ -43,7 +44,7 @@ public abstract class LocalRouter {
 		this.localType = localType;
 		properties = new HashMap<String, Object>();
 		// upstream node codes are positive. lastKey() should return the highest magnitude positive number.
-		upstreamNodes = new TreeMap<Short, RemoteNode>(new Comparator<Short>() {
+		upstreamNodes = new TreeMap<Short, RemoteNode<T>>(new Comparator<Short>() {
 			@Override
 			public int compare(Short o1, Short o2) {
 				return o1.compareTo(o2);
@@ -51,17 +52,47 @@ public abstract class LocalRouter {
 		});
 		upstreamNodeCodeGaps = new LinkedList<Short>();
 		// downstream node codes are negative. lastKey() should return the highest magnitude negative number.
-		downstreamNodes = new TreeMap<Short, RemoteNode>(Collections.reverseOrder());
+		downstreamNodes = new TreeMap<Short, RemoteNode<T>>(Collections.reverseOrder());
 		downstreamNodeCodeGaps = new LinkedList<Short>();
 		bufferCache = new BufferCache();
 		wheelTimer = new ScheduledHashedWheelExecutor();
 	}
 
-	public void setClientManager(ClientManager manager) {
+	public RemoteNodeFactory<T> internalNodeFactory() {
+		return new RemoteNodeFactory<T>() {
+			@Override
+			public RemoteNode<T> make(T parentModel) {
+				return new RemoteRouter<T>(parentModel);
+			}
+
+			@Override
+			public SessionType typeToMake() {
+				return null;
+			}
+		};
+	}
+
+	public RemoteNodeFactory<T> externalNodeFactory() {
+		return new RemoteNodeFactory<T>() {
+			@Override
+			public RemoteNode<T> make(T parentModel) {
+				RemoteNode<T> node = new RemoteNode<T>(parentModel);
+				node.setRemoteCode(parentModel.registerNode(node));
+				return node;
+			}
+
+			@Override
+			public SessionType typeToMake() {
+				return SessionType.TERMINUS;
+			}
+		};
+	}
+
+	public void setClientManager(ClientManager<T> manager) {
 		this.clientManager = manager;
 	}
 
-	public ClientManager getClientManager() {
+	public ClientManager<T> getClientManager() {
 		return clientManager;
 	}
 
@@ -120,15 +151,15 @@ public abstract class LocalRouter {
 		return properties.remove(prop);
 	}
 
-	public RemoteNode getUpstream(short nodeCode) {
+	public RemoteNode<T> getUpstream(short nodeCode) {
 		return upstreamNodes.get(Short.valueOf(nodeCode));
 	}
 
-	public RemoteNode getDownstream(short nodeCode) {
+	public RemoteNode<T> getDownstream(short nodeCode) {
 		return downstreamNodes.get(Short.valueOf(nodeCode));
 	}
 
-	private synchronized short registerNode(SortedMap<Short, RemoteNode> nodes, Queue<Short> gaps, RemoteNode node, short autoIncrement) {
+	private synchronized short registerNode(SortedMap<Short, RemoteNode<T>> nodes, Queue<Short> gaps, RemoteNode<T> node, short autoIncrement) {
 		// we are responsible for auto generating a node code if we are CENTRAL_RELAY
 		// or if we are entry/exit node and the link is to a TERMINUS
 		assert !node.isRemoteCodeSet() == (getLocalType() == ClientType.CENTRAL_RELAY || node.getSessionType() == SessionType.TERMINUS) : ((node.isRemoteCodeSet() ? node.getRemoteCode() : "null") + " " + getLocalType() + " " + node.getSessionType());
@@ -151,7 +182,7 @@ public abstract class LocalRouter {
 		return nodeCode;
 	}
 
-	public short registerNode(RemoteNode node) {
+	public short registerNode(RemoteNode<T> node) {
 		short nodeCode;
 		switch (node.getSessionType()) {
 			case UPWARDS_RELAY:
@@ -182,7 +213,7 @@ public abstract class LocalRouter {
 		return nodeCode;
 	}
 
-	private synchronized RemoteNode deregisterNode(SortedMap<Short, RemoteNode> nodes, Queue<Short> gaps, short nodeCode) {
+	private synchronized RemoteNode<T> deregisterNode(SortedMap<Short, RemoteNode<T>> nodes, Queue<Short> gaps, short nodeCode) {
 		Short oNodeCode = Short.valueOf(nodeCode);
 		// don't add nodeCode to gaps if auto increment will take care of it
 		if (!nodes.isEmpty() && nodes.comparator().compare(oNodeCode, nodes.lastKey()) < 0)
@@ -190,7 +221,7 @@ public abstract class LocalRouter {
 		return nodes.remove(oNodeCode);
 	}
 
-	public RemoteNode deregisterNode(SessionType sessionType, short nodeCode) {
+	public RemoteNode<T> deregisterNode(SessionType sessionType, short nodeCode) {
 		switch (sessionType) {
 			case UPWARDS_RELAY:
 				assert getLocalType() == ClientType.CENTRAL_RELAY && nodeCode > 0 || getLocalType() == ClientType.EXIT_NODE && nodeCode == ClientType.CENTRAL_RELAY_NODE_CODE;
@@ -214,8 +245,8 @@ public abstract class LocalRouter {
 		}
 	}
 
-	public void deregisterNode(RemoteNode node) {
-		RemoteNode removed = deregisterNode(node.getSessionType(), node.getRemoteCode());
+	public void deregisterNode(RemoteNode<T> node) {
+		RemoteNode<T> removed = deregisterNode(node.getSessionType(), node.getRemoteCode());
 		if (removed != node)
 			throw new IllegalStateException("Deregistered " + removed + " instead of " + node);
 	}

@@ -6,5 +6,5 @@ SET IDENTIFIER=test
 SET PASSWORD=test
 SET TERMINUS_HOST=localhost
 SET TERMINUS_PORT=8080
-java -classpath "%~dp0nat-ladder-common\bin;%~dp0nat-ladder-client\bin" -ea -Djava.util.logging.config.file="%~dp0logging.properties" in.kevinj.natladder.boundaryrelay.NatLadderExitNode %CENTRAL_RELAY_HOST% %CENTRAL_RELAY_PORT% %IDENTIFIER% %PASSWORD% %TERMINUS_HOST% %TERMINUS_PORT%
+java -classpath "%~dp0nat-ladder-common\bin;%~dp0nat-ladder-client\bin" -ea -Djava.util.logging.config.file="%~dp0logging.properties" in.kevinj.natladder.exitnode.NatLadderExitNode %CENTRAL_RELAY_HOST% %CENTRAL_RELAY_PORT% %IDENTIFIER% %PASSWORD% %TERMINUS_HOST% %TERMINUS_PORT%
 pause
