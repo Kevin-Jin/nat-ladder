@@ -28,9 +28,7 @@ public class NatLadderExitNode {
 		properties.put("password", password);
 		properties.put("connectToPort", Integer.valueOf(terminusPort));
 
-		ExitNodeClientRegistry state = new ExitNodeClientRegistry(ClientType.EXIT_NODE);
-		state.setProperty("terminusHost", terminusHost);
-		state.setProperty("terminusPort", Integer.valueOf(terminusPort));
+		ExitNodeClientRegistry state = new ExitNodeClientRegistry(ClientType.EXIT_NODE, terminusHost, terminusPort);
 		ClientManager<ExitNodeClientRegistry> eventLoop = new ClientManagerNio<ExitNodeClientRegistry>(state);
 		state.setClientManager(eventLoop);
 		eventLoop.connect(state.internalNodeFactory(), centralRelayHost, centralRelayPort, Collections.unmodifiableMap(properties));
