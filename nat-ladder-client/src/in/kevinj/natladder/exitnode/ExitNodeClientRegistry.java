@@ -1,13 +1,5 @@
 package in.kevinj.natladder.exitnode;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.logging.Level;
-
 import in.kevinj.natladder.common.model.ClientType;
 import in.kevinj.natladder.common.model.LocalRouter;
 import in.kevinj.natladder.common.model.PacketHeaders;
@@ -15,15 +7,43 @@ import in.kevinj.natladder.common.model.RemoteNode;
 import in.kevinj.natladder.common.model.RemoteNode.RemoteNodeFactory;
 import in.kevinj.natladder.common.model.SessionType;
 
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.logging.Level;
+
 public class ExitNodeClientRegistry extends LocalRouter<ExitNodeClientRegistry> {
-	private final Map<String, Object> properties;
+	private static class EntryNodeInfo {
+		public Set<Short> ignoreOnConnect;
+		public Set<Short> inProgressPipes;
+		public Set<Short> establishedPipes;
+		public Map<Short, Short> ourTerminus;
+
+		public EntryNodeInfo() {
+			ignoreOnConnect = new HashSet<Short>();
+			inProgressPipes = new HashSet<Short>();
+			establishedPipes = new HashSet<Short>();
+			ourTerminus = new HashMap<Short, Short>();
+		}
+	}
+
+	private final String terminusHost;
+	private final int terminusPort;
+	private final ReadWriteLock lock;
+	private final Map<Short, EntryNodeInfo> linkedEntryNodes;
+	private final Map<Short, short[]> relayChains;
 
 	public ExitNodeClientRegistry(ClientType localType, String terminusHost, int terminusPort) {
 		super(localType);
-		properties = new HashMap<String, Object>();
+		lock = new ReentrantReadWriteLock();
+		linkedEntryNodes = new HashMap<Short, EntryNodeInfo>();
+		relayChains = new HashMap<Short, short[]>();
 
-		setProperty("terminusHost", terminusHost);
-		setProperty("terminusPort", Integer.valueOf(terminusPort));
+		this.terminusHost = terminusHost;
+		this.terminusPort = terminusPort;
 	}
 
 	@Override
@@ -58,131 +78,169 @@ public class ExitNodeClientRegistry extends LocalRouter<ExitNodeClientRegistry> 
 		};
 	}
 
-	// TODO: not type-safe and a code smell. replace functionality with polymorphism somehow.
-	private boolean setProperty(String prop, Object value) {
-		return properties.put(prop, value) != null;
-	}
-
-	@SuppressWarnings("unchecked")
-	private void extendProperty(String prop, Object... values) {
-		Object existing = properties.get(prop);
-		if (existing == null) {
-			existing = new ArrayList<Object>();
-			properties.put(prop, existing);
-		} else if (!(existing instanceof Collection)) {
-			throw new IllegalStateException(prop + " is not a list property.");
+	private EntryNodeInfo getEntryNode(short nodeCode, boolean autoCreate) {
+		EntryNodeInfo info = linkedEntryNodes.get(Short.valueOf(nodeCode));
+		if (info == null && autoCreate) {
+			info = new EntryNodeInfo();
+			linkedEntryNodes.put(Short.valueOf(nodeCode), info);
 		}
-
-		((Collection<Object>) existing).addAll(Arrays.asList(values));
+		return info;
 	}
 
-	private Object getProperty(String prop) {
-		return properties.get(prop);
+	private EntryNodeInfo removeEntryNode(short nodeCode) {
+		return linkedEntryNodes.remove(Short.valueOf(nodeCode));
 	}
 
-	private Object removeProperty(String prop) {
-		return properties.remove(prop);
-	}
-
+	// initiating a connection to terminus
 	public void linkAttempt(short... entryNodeRelayChain) {
-		extendProperty("INPROGRESS_" + entryNodeRelayChain[0], Short.valueOf(entryNodeRelayChain[1]));
+		Short theirTerminus = Short.valueOf(entryNodeRelayChain[1]);
+
+		lock.writeLock().lock();
+		try {
+			getEntryNode(entryNodeRelayChain[0], true).inProgressPipes.add(theirTerminus);
+		} finally {
+			lock.writeLock().unlock();
+		}
 	}
 
-	public boolean linkFailed(ExitNodeToCentralRelay internalLink, short... entryNodeRelayChain) {
+	// entry node terminated the connection attempt
+	public boolean linkFailedTheirEnd(ExitNodeToCentralRelay internalLink, short... entryNodeRelayChain) {
+		Short theirTerminus = Short.valueOf(entryNodeRelayChain[1]);
 		boolean found = false;
 
-		// first try to stop the pending connection attempt.
-		Collection<?> ourTermini = (Collection<?>) getProperty("INPROGRESS_" + entryNodeRelayChain[0]);
-		if (ourTermini != null && ourTermini.contains(Short.valueOf(entryNodeRelayChain[1]))) {
-			setProperty("IGNORE_" + entryNodeRelayChain[0] + "_" + entryNodeRelayChain[1], Boolean.TRUE);
-			found = true;
-		}
+		lock.writeLock().lock();
+		try {
+			EntryNodeInfo info = getEntryNode(entryNodeRelayChain[0], false);
+			if (info != null) {
+				// first try to stop the pending connection attempt.
+				if (info.inProgressPipes.remove(theirTerminus)) {
+					info.ignoreOnConnect.add(theirTerminus);
+					found = true;
+				}
 
-		// then deregister in case the connection succeeded after entry node sent the notification.
-		ourTermini = (Collection<?>) getProperty("REVERSE_" + entryNodeRelayChain[0]);
-		if (ourTermini != null) {
-			for (Iterator<?> iter = ourTermini.iterator(); iter.hasNext() && !found; ) {
-				short ourTerminus = ((Short) iter.next()).shortValue();
-				short[] relayChain = (short[]) getProperty("RELAYCHAIN_" + ourTerminus);
-				if (relayChain[1] == entryNodeRelayChain[1]) {
-					// found the node we're looking for. it was connected.
-					iter.remove(); // remove from REVERSE_
-					removeProperty("RELAYCHAIN_" + ourTerminus);
-					// undo our first step since it's no longer needed.
-					removeProperty("IGNORE_" + entryNodeRelayChain[0] + "_" + entryNodeRelayChain[1]);
+				// then deregister in case the connection succeeded after entry node sent the notification.
+				if (info.establishedPipes.remove(theirTerminus)) {
+					info.ignoreOnConnect.remove(theirTerminus);
+					short ourTerminus = info.ourTerminus.get(theirTerminus).shortValue();
+					removeRelayChain(ourTerminus);
 					internalLink.getNextNode(ourTerminus).quietClose("Lost connection on source node");
 					found = true;
 				}
 			}
-		}
 
-		return found;
+			return found;
+		} finally {
+			lock.writeLock().unlock();
+		}
 	}
 
+	// returns true if notification should be sent to entry node
+	public boolean linkFailedOurEnd(short... entryNodeRelayChain) {
+		Short theirTerminus = Short.valueOf(entryNodeRelayChain[1]);
+
+		lock.writeLock().lock();
+		try {
+			EntryNodeInfo info = getEntryNode(entryNodeRelayChain[0], false);
+			if (info != null) {
+				// unmark our connection as "in progress"
+				boolean wasInProgress = info.inProgressPipes.remove(theirTerminus);
+	
+				if (!info.ignoreOnConnect.remove(theirTerminus)) {
+					if (!wasInProgress)
+						throw new IllegalStateException("Killed a non-existent connection (remote node code: " + entryNodeRelayChain[0] + "," + entryNodeRelayChain[1] + ")");
+
+					return true;
+				}
+			}
+
+			// entry node already disconnected on us
+			return false;
+		} finally {
+			lock.writeLock().unlock();
+		}
+	}
+
+	// returns true if notification should be sent to entry node
 	public boolean linkEstablished(short ourTerminus, short... entryNodeRelayChain) {
-		// unmark our connection as "in progress"
-		Collection<?> ourTermini = (Collection<?>) getProperty("INPROGRESS_" + entryNodeRelayChain[0]);
-		boolean removed = (ourTermini != null && ourTermini.remove(Short.valueOf(entryNodeRelayChain[1])));
+		Short theirTerminus = Short.valueOf(entryNodeRelayChain[1]);
 
-		Boolean ignore = (Boolean) removeProperty("IGNORE_" + entryNodeRelayChain[0] + "_" + entryNodeRelayChain[1]);
-		if (ignore == null || !ignore.booleanValue()) {			// should only be false if entry node disconnected while this connection was pending.
-			// in that case, ignore is true and this execution path should not have been followed.
-			if (!removed)
-				throw new IllegalStateException("Completed a non-existent connection (remote node code: " + entryNodeRelayChain[0] + "," + entryNodeRelayChain[1] + ")");
+		lock.writeLock().lock();
+		try {
+			EntryNodeInfo info = getEntryNode(entryNodeRelayChain[0], false);
+			if (info != null) {
+				// unmark our connection as "in progress"
+				boolean wasInProgress = info.inProgressPipes.remove(theirTerminus);
 
-			// set our relay chain and relay chain reverse mapping
-			setProperty("RELAYCHAIN_" + ourTerminus, entryNodeRelayChain);
-			extendProperty("REVERSE_" + entryNodeRelayChain[0], ourTerminus);
-			return true;
+				if (!info.ignoreOnConnect.remove(theirTerminus)) {
+					if (!wasInProgress)
+						throw new IllegalStateException("Completed a non-existent connection (remote node code: " + entryNodeRelayChain[0] + "," + entryNodeRelayChain[1] + ")");
+
+					// set our relay chain and relay chain reverse mapping
+					relayChains.put(Short.valueOf(ourTerminus), entryNodeRelayChain);
+					info.establishedPipes.add(theirTerminus);
+					info.ourTerminus.put(theirTerminus, Short.valueOf(ourTerminus));
+					return true;
+				}
+			}
+
+			// entry node already disconnected on us
+			return false;
+		} finally {
+			lock.writeLock().unlock();
 		}
-		return false;
 	}
 
-	// terminus link on entry node disconnected
-	public void linkLostTheirEnd(short ourTerminus, short... entryNodeRelayChain) {
-		Collection<?> ourTermini = (Collection<?>) getProperty("REVERSE_" + entryNodeRelayChain[0]);
-		if (ourTermini == null || !ourTermini.remove(Short.valueOf(ourTerminus)))
-			throw new IllegalStateException("Inconsistent state in RELAYCHAIN_ or REVERSE_ (node code: " + ourTerminus + ")");
-	}
+	// terminus link on entry node or exit node disconnected
+	public void linkLost(short ourTerminus, short... entryNodeRelayChain) {
+		Short theirTerminus = Short.valueOf(entryNodeRelayChain[1]);
 
-	// terminus link on exit node disconnected
-	public void linkLostOurEnd(short ourTerminus, short... entryNodeRelayChain) {
-		if (entryNodeRelayChain != null) {
-			Collection<?> ourTermini = (Collection<?>) getProperty("REVERSE_" + entryNodeRelayChain[0]);
-			if (ourTermini == null || !ourTermini.remove(Short.valueOf(ourTerminus)))
-				throw new IllegalStateException("Inconsistent state in RELAYCHAIN_ or REVERSE_ (node code: " + ourTerminus + ")");
-		} else {
-			throw new IllegalStateException("Cut a non-existent connection (node code: " + ourTerminus + ")");
+		lock.writeLock().lock();
+		try {
+			EntryNodeInfo info = getEntryNode(entryNodeRelayChain[0], false);
+			boolean wasEstablishedPipe = info != null && info.establishedPipes.remove(theirTerminus);
+			boolean hadMapping = info != null && Short.valueOf(ourTerminus).equals(info.ourTerminus.remove(theirTerminus));
+			if (!wasEstablishedPipe || !hadMapping)
+				throw new IllegalStateException("Inconsistent state in EntryNodeInfo (node code: " + ourTerminus + ")");
+		} finally {
+			lock.writeLock().unlock();
 		}
 	}
 
 	// entry node disconnected
 	public void linksLost(ExitNodeToCentralRelay internalLink, short entryNode) {
-		// cut terminus connections that relay through the provided entry node
-		Collection<?> ourTermini = (Collection<?>) removeProperty("REVERSE_" + entryNode);
-		RemoteNode<ExitNodeClientRegistry> externalLink;
-		if (ourTermini != null)
-			// at least one pipe exists through the entry node
-			for (Object ourTerminus : ourTermini)
-				// we're being notified by CENTRAL_RELAY. no need to echo back the cut notification to CENTRAL_RELAY
-				if ((externalLink = internalLink.getNextNode(((Short) ourTerminus).shortValue())) != null)
-					externalLink.quietClose("Lost connection to entry node");
-				else
-					throw new IllegalStateException("Cut a non-existent connection (node code: " + ourTerminus + ")");
+		lock.writeLock().lock();
+		try {
+			EntryNodeInfo info = removeEntryNode(entryNode);
+			if (info != null) {
+				// cut terminus connections that relay through the provided entry node
+				RemoteNode<ExitNodeClientRegistry> externalLink;
+				short ourTerminus;
+				for (Short theirTerminus : info.establishedPipes)
+					// we're being notified by CENTRAL_RELAY. no need to echo back the cut notification to CENTRAL_RELAY
+					if ((externalLink = internalLink.getNextNode(ourTerminus = info.ourTerminus.remove(theirTerminus).shortValue())) != null)
+						externalLink.quietClose("Lost connection to entry node");
+					else
+						throw new IllegalStateException("Cut a non-existent connection (node code: " + ourTerminus + ")");
+				info.establishedPipes.clear();
 
-		// cut connections in progress
-		ourTermini = (Collection<?>) removeProperty("INPROGRESS_" + entryNode);
-		if (ourTermini != null)
-			for (Object ourTerminus : ourTermini)
-				setProperty("IGNORE_" + entryNode + "_" + ourTerminus, Boolean.TRUE);
+				// cut connections in progress
+				for (Short theirTerminus : info.inProgressPipes)
+					info.ignoreOnConnect.add(theirTerminus);
+				info.inProgressPipes.clear();
+			}
+			// null checks on info in linkFailedOurEnd() and linkEstablished() should
+			// ensure that clearing entry node state when ignoreOnConnect is not empty is still safe
+		} finally {
+			lock.writeLock().unlock();
+		}
 	}
 
 	public String getTerminusHost() {
-		return (String) getProperty("terminusHost");
+		return terminusHost;
 	}
 
 	public int getTerminusPort() {
-		return ((Integer) getProperty("terminusPort")).intValue();
+		return terminusPort;
 	}
 
 	@Override
@@ -193,13 +251,23 @@ public class ExitNodeClientRegistry extends LocalRouter<ExitNodeClientRegistry> 
 	}
 
 	@Override
-	public short[] getRelayChain(short nodeCode) {
-		return (short[]) getProperty("RELAYCHAIN_" + nodeCode);
+	public short[] getRelayChain(short ourTerminus) {
+		lock.readLock().lock();
+		try {
+			return relayChains.get(Short.valueOf(ourTerminus));
+		} finally {
+			lock.readLock().unlock();
+		}
 	}
 
 	@Override
 	public short[] removeRelayChain(short nodeCode) {
-		return (short[]) removeProperty("RELAYCHAIN_" + nodeCode);
+		lock.writeLock().lock();
+		try {
+			return relayChains.remove(Short.valueOf(nodeCode));
+		} finally {
+			lock.writeLock().unlock();
+		}
 	}
 
 	@Override
@@ -260,10 +328,12 @@ public class ExitNodeClientRegistry extends LocalRouter<ExitNodeClientRegistry> 
 			case TERMINUS: {
 				LOG.log(Level.WARNING, "Failed to establish connection with " + RemoteNode.getRemoteTypeString(sessionType, getRemoteType(sessionType)), ex);
 				short[] entryNodeRelayChain = (short[]) properties.get("entryNodeRelayChain");
-				getCentralRelayLink().getClientSession().packetBuilder(Byte.SIZE / 8 + Short.SIZE / 8, entryNodeRelayChain[0], LocalRouter.CONTROL_CODE)
-					.writeByte(PacketHeaders.PIPE_FAIL)
-					.writeShort(entryNodeRelayChain[1])
-				.send();
+				if (linkFailedOurEnd(entryNodeRelayChain)) {
+					getCentralRelayLink().getClientSession().packetBuilder(Byte.SIZE / 8 + Short.SIZE / 8, entryNodeRelayChain[0], LocalRouter.CONTROL_CODE)
+						.writeByte(PacketHeaders.PIPE_FAIL)
+						.writeShort(entryNodeRelayChain[1])
+					.send();
+				}
 				break;
 			}
 			default:

@@ -42,7 +42,10 @@ public class ExitNodeToCentralRelay extends RemoteRouter<ExitNodeClientRegistry>
 	@Override
 	public short[] notifyFoundCutExternal(short ourTerminus) {
 		short[] relayChain = super.notifyFoundCutExternal(ourTerminus);
-		getLocalNode().linkLostOurEnd(ourTerminus, relayChain);
+		if (relayChain != null)
+			getLocalNode().linkLost(ourTerminus, relayChain);
+		else
+			throw new IllegalStateException("Cut a non-existent connection (node code: " + ourTerminus + ")");
 
 		return relayChain;
 	}
@@ -72,13 +75,11 @@ public class ExitNodeToCentralRelay extends RemoteRouter<ExitNodeClientRegistry>
 		switch (foundCutType) {
 			case PacketHeaders.FOUND_CUT_TERMINUS: {
 				Pair<Short, short[]> info = super.processFoundCut(packet);
-
-				getLocalNode().linkLostTheirEnd(info.left.shortValue(), info.right);
+				getLocalNode().linkLost(info.left.shortValue(), info.right);
 				return info;
 			}
 			case PacketHeaders.FOUND_CUT_NODE: {
 				short otherNode = packet.readShort();
-
 				getLocalNode().linksLost(this, otherNode);
 				return null;
 			}
@@ -109,7 +110,7 @@ public class ExitNodeToCentralRelay extends RemoteRouter<ExitNodeClientRegistry>
 		short entryNodeCode = packet.readShort();
 		short theirTerminus = packet.readShort();
 
-		if (!getLocalNode().linkFailed(this, entryNodeCode, theirTerminus))
+		if (!getLocalNode().linkFailedTheirEnd(this, entryNodeCode, theirTerminus))
 			throw new IllegalStateException("Cut a non-existent connection (remote node code: " + entryNodeCode + "," + theirTerminus + ")");
 	}
 }
