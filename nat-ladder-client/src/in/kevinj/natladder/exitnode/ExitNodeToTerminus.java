@@ -8,8 +8,8 @@ import java.util.Collection;
 import java.util.Map;
 import java.util.logging.Level;
 
-public class ExitNodeExternalClient extends RemoteNode<ExitNodeClientRegistry> {
-	public ExitNodeExternalClient(ExitNodeClientRegistry parentModel) {
+public class ExitNodeToTerminus extends RemoteNode<ExitNodeClientRegistry> {
+	public ExitNodeToTerminus(ExitNodeClientRegistry parentModel) {
 		super(parentModel);
 	}
 

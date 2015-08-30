@@ -24,9 +24,6 @@ public class NatLadderEntryNode {
 		properties.put("password", password);
 
 		EntryNodeClientRegistry state = new EntryNodeClientRegistry(ClientType.ENTRY_NODE);
-		// TODO: should receive this in ACCEPTED packet. should be the number of hops to TERMINUS on other side,
-		// i.e. 2 because we must go through CENTRAL_RELAY and EXIT_NODE
-		state.setProperty("RELAYCHAIN_DEFAULT", Integer.valueOf(2));
 		ClientManager<EntryNodeClientRegistry> eventLoop = new ClientManagerNio<EntryNodeClientRegistry>(state);
 		state.setClientManager(eventLoop);
 		eventLoop.connect(state.internalNodeFactory(), centralRelayHost, centralRelayPort, Collections.unmodifiableMap(properties));

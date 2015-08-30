@@ -5,12 +5,8 @@ import in.kevinj.natladder.common.netimpl.BufferCache;
 import in.kevinj.natladder.common.netimpl.ClientManager;
 import in.kevinj.natladder.common.util.ScheduledHashedWheelExecutor;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.Map;
 import java.util.Queue;
@@ -28,7 +24,6 @@ public abstract class LocalRouter<T extends LocalRouter<T>> {
 	private final ClientType localType;
 	private ClientManager<T> clientManager;
 
-	private final Map<String, Object> properties;
 	private final SortedMap<Short, RemoteNode<T>> upstreamNodes;
 	private final Queue<Short> upstreamNodeCodeGaps;
 	private final SortedMap<Short, RemoteNode<T>> downstreamNodes;
@@ -42,7 +37,6 @@ public abstract class LocalRouter<T extends LocalRouter<T>> {
 
 	public LocalRouter(ClientType localType) {
 		this.localType = localType;
-		properties = new HashMap<String, Object>();
 		// upstream node codes are positive. lastKey() should return the highest magnitude positive number.
 		upstreamNodes = new TreeMap<Short, RemoteNode<T>>(new Comparator<Short>() {
 			@Override
@@ -61,6 +55,12 @@ public abstract class LocalRouter<T extends LocalRouter<T>> {
 	public abstract RemoteNodeFactory<T> internalNodeFactory();
 
 	public abstract RemoteNodeFactory<T> externalNodeFactory();
+
+	public abstract int getIntermediateHops();
+
+	public abstract short[] getRelayChain(short ourTerminus);
+
+	public abstract short[] removeRelayChain(short ourTerminus);
 
 	public void setClientManager(ClientManager<T> manager) {
 		this.clientManager = manager;
@@ -97,32 +97,6 @@ public abstract class LocalRouter<T extends LocalRouter<T>> {
 
 	public ClientType getLocalType() {
 		return localType;
-	}
-
-	// TODO: not type-safe and a code smell. replace functionality with polymorphism somehow.
-	public boolean setProperty(String prop, Object value) {
-		return properties.put(prop, value) != null;
-	}
-
-	@SuppressWarnings("unchecked")
-	public void extendProperty(String prop, Object... values) {
-		Object existing = properties.get(prop);
-		if (existing == null) {
-			existing = new ArrayList<Object>();
-			properties.put(prop, existing);
-		} else if (!(existing instanceof Collection)) {
-			throw new IllegalStateException(prop + " is not a list property.");
-		}
-
-		((Collection<Object>) existing).addAll(Arrays.asList(values));
-	}
-
-	public Object getProperty(String prop) {
-		return properties.get(prop);
-	}
-
-	public Object removeProperty(String prop) {
-		return properties.remove(prop);
 	}
 
 	public RemoteNode<T> getUpstream(short nodeCode) {
@@ -164,7 +138,7 @@ public abstract class LocalRouter<T extends LocalRouter<T>> {
 		return registerNode(downstreamNodes, downstreamNodeCodeGaps, node, (short) -1);
 	}
 
-	public abstract short registerNode(RemoteNode<T> node);
+	protected abstract short registerNode(RemoteNode<T> node);
 
 	protected synchronized RemoteNode<T> deregisterNode(SortedMap<Short, RemoteNode<T>> nodes, Queue<Short> gaps, short nodeCode) {
 		Short oNodeCode = Short.valueOf(nodeCode);
@@ -182,9 +156,9 @@ public abstract class LocalRouter<T extends LocalRouter<T>> {
 		return deregisterNode(downstreamNodes, downstreamNodeCodeGaps, nodeCode);
 	}
 
-	public abstract RemoteNode<T> deregisterNode(SessionType sessionType, short nodeCode);
+	protected abstract RemoteNode<T> deregisterNode(SessionType sessionType, short nodeCode);
 
-	public void deregisterNode(RemoteNode<T> node) {
+	protected void deregisterNode(RemoteNode<T> node) {
 		RemoteNode<T> removed = deregisterNode(node.getSessionType(), node.getRemoteCode());
 		if (removed != node)
 			throw new IllegalStateException("Deregistered " + removed + " instead of " + node);

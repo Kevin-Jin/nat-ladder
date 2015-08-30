@@ -6,17 +6,24 @@ import in.kevinj.natladder.common.model.RemoteNode;
 import in.kevinj.natladder.common.model.RemoteNode.RemoteNodeFactory;
 import in.kevinj.natladder.common.model.SessionType;
 
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+
 public class EntryNodeClientRegistry extends LocalRouter<EntryNodeClientRegistry> {
+	private volatile short exitNodeCode;
+	private final ConcurrentMap<Short, short[]> relayChains;
+
 	public EntryNodeClientRegistry(ClientType localType) {
 		super(localType);
+		relayChains = new ConcurrentHashMap<Short, short[]>();
 	}
 
 	@Override
 	public RemoteNodeFactory<EntryNodeClientRegistry> internalNodeFactory() {
 		return new RemoteNodeFactory<EntryNodeClientRegistry>() {
 			@Override
-			public EntryNodeInternalClient make(EntryNodeClientRegistry parentModel) {
-				return new EntryNodeInternalClient(parentModel, SessionType.DOWNWARDS_RELAY);
+			public EntryNodeToCentralRelay make(EntryNodeClientRegistry parentModel) {
+				return new EntryNodeToCentralRelay(parentModel, SessionType.DOWNWARDS_RELAY);
 			}
 
 			@Override
@@ -30,8 +37,8 @@ public class EntryNodeClientRegistry extends LocalRouter<EntryNodeClientRegistry
 	public RemoteNodeFactory<EntryNodeClientRegistry> externalNodeFactory() {
 		return new RemoteNodeFactory<EntryNodeClientRegistry>() {
 			@Override
-			public EntryNodeExternalClient make(EntryNodeClientRegistry parentModel) {
-				EntryNodeExternalClient node = new EntryNodeExternalClient(parentModel);
+			public EntryNodeToTerminus make(EntryNodeClientRegistry parentModel) {
+				EntryNodeToTerminus node = new EntryNodeToTerminus(parentModel);
 				node.setRemoteCode(parentModel.registerNode(node));
 				return node;
 			}
@@ -43,8 +50,39 @@ public class EntryNodeClientRegistry extends LocalRouter<EntryNodeClientRegistry
 		};
 	}
 
+	public void setExitNodeCode(short nodeCode) {
+		exitNodeCode = nodeCode;
+	}
+
+	public void setRelayChain(short ourTerminus, short... relayChain) {
+		assert relayChain.length == getIntermediateHops();
+
+		relayChains.put(Short.valueOf(ourTerminus), relayChain);
+	}
+
+	public short getExitNodeCode() {
+		return exitNodeCode;
+	}
+
 	@Override
-	public short registerNode(RemoteNode<EntryNodeClientRegistry> node) {
+	public int getIntermediateHops() {
+		// TODO: should receive this in ACCEPTED packet. should be the number of hops to TERMINUS on other side,
+		// i.e. 2 because we must go through CENTRAL_RELAY and EXIT_NODE
+		return 2;
+	}
+
+	@Override
+	public short[] getRelayChain(short nodeCode) {
+		return relayChains.get(Short.valueOf(nodeCode));
+	}
+
+	@Override
+	public short[] removeRelayChain(short nodeCode) {
+		return relayChains.remove(Short.valueOf(nodeCode));
+	}
+
+	@Override
+	protected short registerNode(RemoteNode<EntryNodeClientRegistry> node) {
 		short nodeCode;
 		switch (node.getSessionType()) {
 			case DOWNWARDS_RELAY:
@@ -62,7 +100,7 @@ public class EntryNodeClientRegistry extends LocalRouter<EntryNodeClientRegistry
 	}
 
 	@Override
-	public RemoteNode<EntryNodeClientRegistry> deregisterNode(SessionType sessionType, short nodeCode) {
+	protected RemoteNode<EntryNodeClientRegistry> deregisterNode(SessionType sessionType, short nodeCode) {
 		switch (sessionType) {
 			case DOWNWARDS_RELAY:
 				assert nodeCode == ClientType.CENTRAL_RELAY_NODE_CODE;

@@ -12,8 +12,8 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.logging.Level;
 
-public class EntryNodeInternalClient extends RemoteRouter<EntryNodeClientRegistry> {
-	public EntryNodeInternalClient(EntryNodeClientRegistry parentModel, SessionType sessionType) {
+public class EntryNodeToCentralRelay extends RemoteRouter<EntryNodeClientRegistry> {
+	public EntryNodeToCentralRelay(EntryNodeClientRegistry parentModel, SessionType sessionType) {
 		super(parentModel);
 		setSessionType(sessionType);
 	}
@@ -33,12 +33,18 @@ public class EntryNodeInternalClient extends RemoteRouter<EntryNodeClientRegistr
 	}
 
 	@Override
+	protected RemoteNode<EntryNodeClientRegistry> getNextNode(short nodeCode) {
+		// return the link to the terminus
+		return getLocalNode().getUpstream(nodeCode);
+	}
+
+	@Override
 	public short[] notifyFoundCutExternal(short ourTerminus) {
 		short[] relayChain = super.notifyFoundCutExternal(ourTerminus);
 		if (relayChain == null) {
 			// relayChain can actually be null if connection to exit node has not yet established the pipe
 			// (maybe because the other terminus is timing out on us).
-			short exitNodeCode = ((Short) getLocalNode().getProperty("exitNodeCode")).shortValue();
+			short exitNodeCode = getLocalNode().getExitNodeCode();
 			getClientSession().packetBuilder(Byte.SIZE / 8 + Short.SIZE / 8 * 2, exitNodeCode, LocalRouter.CONTROL_CODE)
 				.writeByte(PacketHeaders.PIPE_FAIL)
 				.writeShort(getLocalNode().getLocalCode())
@@ -65,7 +71,7 @@ public class EntryNodeInternalClient extends RemoteRouter<EntryNodeClientRegistr
 			portNumber,
 			Collections.<String, Object>singletonMap("exitNodeCode", Short.valueOf(exitNodeCode))
 		);
-		getLocalNode().setProperty("exitNodeCode", Short.valueOf(exitNodeCode));
+		getLocalNode().setExitNodeCode(exitNodeCode);
 	}
 
 	@Override
@@ -111,8 +117,8 @@ public class EntryNodeInternalClient extends RemoteRouter<EntryNodeClientRegistr
 		short ourTerminus = packet.readShort();
 		short exitNodeCode = packet.readShort();
 		short theirTerminus = packet.readShort();
-		// set our relay chain
-		getLocalNode().setProperty("RELAYCHAIN_" + ourTerminus, new short[] { exitNodeCode, theirTerminus });
+
+		getLocalNode().setRelayChain(ourTerminus, exitNodeCode, theirTerminus);
 		RemoteNode<EntryNodeClientRegistry> terminus = getNextNode(ourTerminus);
 		LOG.log(Level.INFO, "Connection with {0} ({1}) at {2} piped through", new Object[] { terminus.getRemoteTypeString(), terminus.getRemoteCode(), terminus.getClientSession().getAddress() });
 	}

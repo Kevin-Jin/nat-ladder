@@ -45,19 +45,7 @@ public abstract class RemoteRouter<T extends LocalRouter<T>> extends RemoteNode<
 		return thisMessageDest == LocalRouter.CONTROL_CODE;
 	}
 
-	protected RemoteNode<T> getNextNode(short nodeCode) {
-		if (getSessionType() == null)
-			throw new IllegalStateException("Received forward request before IDENTIFY");
-
-		switch (getSessionType()) {
-			case UPWARDS_RELAY:
-				return getLocalNode().getDownstream(nodeCode);
-			case DOWNWARDS_RELAY:
-				return getLocalNode().getUpstream(nodeCode);
-			default:
-				throw new IllegalStateException("Invalid session type " + getSessionType());
-		}
-	}
+	protected abstract RemoteNode<T> getNextNode(short nodeCode);
 
 	@Override
 	public RemoteNode<T> getNextNode() {
@@ -66,7 +54,7 @@ public abstract class RemoteRouter<T extends LocalRouter<T>> extends RemoteNode<
 
 	@Override
 	public short[] notifyFoundCutExternal(short ourTerminus) {
-		short[] relayChain = (short[]) getLocalNode().removeProperty("RELAYCHAIN_" + ourTerminus);
+		short[] relayChain = (short[]) getLocalNode().removeRelayChain(ourTerminus);
 		if (relayChain != null) {
 			getClientSession().packetBuilder(Byte.SIZE / 8 * 2 + Short.SIZE / 8, relayChain[0], LocalRouter.CONTROL_CODE)
 				.writeByte(PacketHeaders.FOUND_CUT)
@@ -99,7 +87,7 @@ public abstract class RemoteRouter<T extends LocalRouter<T>> extends RemoteNode<
 
 	protected Pair<Short, short[]> processFoundCut(PacketParser packet) {
 		short ourTerminus = packet.readShort();
-		short[] relayChain = (short[]) getLocalNode().removeProperty("RELAYCHAIN_" + ourTerminus);
+		short[] relayChain = (short[]) getLocalNode().removeRelayChain(ourTerminus);
 		if (relayChain == null)
 			throw new IllegalStateException("Cut a non-existent connection (node code: " + ourTerminus + ")");
 

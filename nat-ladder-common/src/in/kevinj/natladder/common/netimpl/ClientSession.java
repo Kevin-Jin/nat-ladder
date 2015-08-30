@@ -93,7 +93,7 @@ public abstract class ClientSession<T extends LocalRouter<T>> {
 		readBuffer = model.getLocalNode().getBufferCache().takeBuffer();
 		if (model.forwardRaw()) {
 			// must reserve space for packet prefix (payload length and relay chain)
-			expectedRelayChainLength = ((Integer) model.getLocalNode().getProperty("RELAYCHAIN_DEFAULT")).intValue();
+			expectedRelayChainLength = model.getLocalNode().getIntermediateHops();
 			readBuffer.position(Integer.SIZE / 8 + Short.SIZE / 8 * expectedRelayChainLength);
 			nextMessageType = MessageType.RAW;
 
@@ -269,7 +269,7 @@ public abstract class ClientSession<T extends LocalRouter<T>> {
 			return false;
 
 		// received message to be forwarded
-		short[] relayChain = (short[]) model.getLocalNode().getProperty("RELAYCHAIN_" + model.getRemoteCode());
+		short[] relayChain = model.getLocalNode().getRelayChain(model.getRemoteCode());
 		if (relayChain == null)
 			throw new IllegalStateException("No pipe to exit node for " + SessionType.TERMINUS + " " + model.getRemoteCode());
 

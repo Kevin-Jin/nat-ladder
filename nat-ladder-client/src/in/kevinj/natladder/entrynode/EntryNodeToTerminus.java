@@ -6,8 +6,8 @@ import in.kevinj.natladder.common.model.RemoteNode;
 
 import java.util.Map;
 
-public class EntryNodeExternalClient extends RemoteNode<EntryNodeClientRegistry> {
-	public EntryNodeExternalClient(EntryNodeClientRegistry parentModel) {
+public class EntryNodeToTerminus extends RemoteNode<EntryNodeClientRegistry> {
+	public EntryNodeToTerminus(EntryNodeClientRegistry parentModel) {
 		super(parentModel);
 	}
 

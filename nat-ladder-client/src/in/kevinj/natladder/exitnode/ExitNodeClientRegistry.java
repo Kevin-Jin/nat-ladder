@@ -1,5 +1,9 @@
 package in.kevinj.natladder.exitnode;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.logging.Level;
 
@@ -11,16 +15,19 @@ import in.kevinj.natladder.common.model.RemoteNode.RemoteNodeFactory;
 import in.kevinj.natladder.common.model.SessionType;
 
 public class ExitNodeClientRegistry extends LocalRouter<ExitNodeClientRegistry> {
+	private final Map<String, Object> properties;
+
 	public ExitNodeClientRegistry(ClientType localType) {
 		super(localType);
+		properties = new HashMap<String, Object>();
 	}
 
 	@Override
 	public RemoteNodeFactory<ExitNodeClientRegistry> internalNodeFactory() {
 		return new RemoteNodeFactory<ExitNodeClientRegistry>() {
 			@Override
-			public ExitNodeInternalClient make(ExitNodeClientRegistry parentModel) {
-				return new ExitNodeInternalClient(parentModel, SessionType.UPWARDS_RELAY);
+			public ExitNodeToCentralRelay make(ExitNodeClientRegistry parentModel) {
+				return new ExitNodeToCentralRelay(parentModel, SessionType.UPWARDS_RELAY);
 			}
 
 			@Override
@@ -34,8 +41,8 @@ public class ExitNodeClientRegistry extends LocalRouter<ExitNodeClientRegistry> 
 	public RemoteNodeFactory<ExitNodeClientRegistry> externalNodeFactory() {
 		return new RemoteNodeFactory<ExitNodeClientRegistry>() {
 			@Override
-			public ExitNodeExternalClient make(ExitNodeClientRegistry parentModel) {
-				ExitNodeExternalClient node = new ExitNodeExternalClient(parentModel);
+			public ExitNodeToTerminus make(ExitNodeClientRegistry parentModel) {
+				ExitNodeToTerminus node = new ExitNodeToTerminus(parentModel);
 				node.setRemoteCode(parentModel.registerNode(node));
 				return node;
 			}
@@ -47,8 +54,51 @@ public class ExitNodeClientRegistry extends LocalRouter<ExitNodeClientRegistry> 
 		};
 	}
 
+	// TODO: not type-safe and a code smell. replace functionality with polymorphism somehow.
+	public boolean setProperty(String prop, Object value) {
+		return properties.put(prop, value) != null;
+	}
+
+	@SuppressWarnings("unchecked")
+	public void extendProperty(String prop, Object... values) {
+		Object existing = properties.get(prop);
+		if (existing == null) {
+			existing = new ArrayList<Object>();
+			properties.put(prop, existing);
+		} else if (!(existing instanceof Collection)) {
+			throw new IllegalStateException(prop + " is not a list property.");
+		}
+
+		((Collection<Object>) existing).addAll(Arrays.asList(values));
+	}
+
+	public Object getProperty(String prop) {
+		return properties.get(prop);
+	}
+
+	public Object removeProperty(String prop) {
+		return properties.remove(prop);
+	}
+
 	@Override
-	public short registerNode(RemoteNode<ExitNodeClientRegistry> node) {
+	public int getIntermediateHops() {
+		// TODO: should receive this in ACCEPTED packet. should be the number of hops to TERMINUS on other side,
+		// i.e. 2 because we must go through CENTRAL_RELAY and ENTRY_NODE
+		return 2;
+	}
+
+	@Override
+	public short[] getRelayChain(short nodeCode) {
+		return (short[]) getProperty("RELAYCHAIN_" + nodeCode);
+	}
+
+	@Override
+	public short[] removeRelayChain(short nodeCode) {
+		return (short[]) removeProperty("RELAYCHAIN_" + nodeCode);
+	}
+
+	@Override
+	protected short registerNode(RemoteNode<ExitNodeClientRegistry> node) {
 		short nodeCode;
 		switch (node.getSessionType()) {
 			case UPWARDS_RELAY:
@@ -66,7 +116,7 @@ public class ExitNodeClientRegistry extends LocalRouter<ExitNodeClientRegistry> 
 	}
 
 	@Override
-	public RemoteNode<ExitNodeClientRegistry> deregisterNode(SessionType sessionType, short nodeCode) {
+	protected RemoteNode<ExitNodeClientRegistry> deregisterNode(SessionType sessionType, short nodeCode) {
 		switch (sessionType) {
 			case UPWARDS_RELAY:
 				assert nodeCode == ClientType.CENTRAL_RELAY_NODE_CODE;

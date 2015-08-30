@@ -29,9 +29,6 @@ public class NatLadderExitNode {
 		properties.put("connectToPort", Integer.valueOf(terminusPort));
 
 		ExitNodeClientRegistry state = new ExitNodeClientRegistry(ClientType.EXIT_NODE);
-		// TODO: should receive this in ACCEPTED packet. should be the number of hops to TERMINUS on other side,
-		// i.e. 2 because we must go through CENTRAL_RELAY and ENTRY_NODE
-		state.setProperty("RELAYCHAIN_DEFAULT", Integer.valueOf(2));
 		state.setProperty("terminusHost", terminusHost);
 		state.setProperty("terminusPort", Integer.valueOf(terminusPort));
 		ClientManager<ExitNodeClientRegistry> eventLoop = new ClientManagerNio<ExitNodeClientRegistry>(state);

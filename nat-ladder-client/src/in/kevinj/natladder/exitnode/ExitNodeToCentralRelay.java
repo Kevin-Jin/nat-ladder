@@ -14,8 +14,8 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.logging.Level;
 
-public class ExitNodeInternalClient extends RemoteRouter<ExitNodeClientRegistry> {
-	public ExitNodeInternalClient(ExitNodeClientRegistry parentModel, SessionType sessionType) {
+public class ExitNodeToCentralRelay extends RemoteRouter<ExitNodeClientRegistry> {
+	public ExitNodeToCentralRelay(ExitNodeClientRegistry parentModel, SessionType sessionType) {
 		super(parentModel);
 		setSessionType(sessionType);
 	}
@@ -33,6 +33,12 @@ public class ExitNodeInternalClient extends RemoteRouter<ExitNodeClientRegistry>
 			.writeString((String) properties.get("password"))
 			.writeInt(((Integer) properties.get("connectToPort")).intValue())
 		.send();
+	}
+
+	@Override
+	protected RemoteNode<ExitNodeClientRegistry> getNextNode(short nodeCode) {
+		// return the link to the terminus
+		return getLocalNode().getDownstream(nodeCode);
 	}
 
 	@Override
