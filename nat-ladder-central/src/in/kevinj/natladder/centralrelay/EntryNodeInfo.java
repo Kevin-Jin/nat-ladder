@@ -1,4 +1,4 @@
-package in.kevinj.natladder.common.model;
+package in.kevinj.natladder.centralrelay;
 
 public class EntryNodeInfo {
 	public final String exitNodeIdentifier;

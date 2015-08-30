@@ -259,7 +259,7 @@ public class ClientManagerNio<T extends LocalRouter<T>> implements ClientManager
 							newConnProps = newConnectionProps.remove(key);
 							if (sessionType == null)
 								throw new IllegalStateException("Invalid session type " + sessionType);
-							RemoteNode.onConnectFailed(model, sessionType, newConnProps, ex);
+							model.onConnectFailed(sessionType, newConnProps, ex);
 						} catch (Throwable ex) {
 							// the show must go on. don't let any single iteration spoil our event loop.
 							if (session != null)

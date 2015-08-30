@@ -58,35 +58,9 @@ public abstract class LocalRouter<T extends LocalRouter<T>> {
 		wheelTimer = new ScheduledHashedWheelExecutor();
 	}
 
-	public RemoteNodeFactory<T> internalNodeFactory() {
-		return new RemoteNodeFactory<T>() {
-			@Override
-			public RemoteNode<T> make(T parentModel) {
-				return new RemoteRouter<T>(parentModel);
-			}
+	public abstract RemoteNodeFactory<T> internalNodeFactory();
 
-			@Override
-			public SessionType typeToMake() {
-				return null;
-			}
-		};
-	}
-
-	public RemoteNodeFactory<T> externalNodeFactory() {
-		return new RemoteNodeFactory<T>() {
-			@Override
-			public RemoteNode<T> make(T parentModel) {
-				RemoteNode<T> node = new RemoteNode<T>(parentModel);
-				node.setRemoteCode(parentModel.registerNode(node));
-				return node;
-			}
-
-			@Override
-			public SessionType typeToMake() {
-				return SessionType.TERMINUS;
-			}
-		};
-	}
+	public abstract RemoteNodeFactory<T> externalNodeFactory();
 
 	public void setClientManager(ClientManager<T> manager) {
 		this.clientManager = manager;
@@ -182,38 +156,17 @@ public abstract class LocalRouter<T extends LocalRouter<T>> {
 		return nodeCode;
 	}
 
-	public short registerNode(RemoteNode<T> node) {
-		short nodeCode;
-		switch (node.getSessionType()) {
-			case UPWARDS_RELAY:
-				assert !node.isRemoteCodeSet() || getLocalType() == ClientType.EXIT_NODE && node.getRemoteCode() == ClientType.CENTRAL_RELAY_NODE_CODE : getLocalType() + " " + node.getRemoteCode();
-				nodeCode = registerNode(upstreamNodes, upstreamNodeCodeGaps, node, (short) 1);
-				break;
-			case DOWNWARDS_RELAY:
-				assert !node.isRemoteCodeSet() || getLocalType() == ClientType.ENTRY_NODE && node.getRemoteCode() == ClientType.CENTRAL_RELAY_NODE_CODE : getLocalType() + " " + node.getRemoteCode();
-				nodeCode = registerNode(downstreamNodes, downstreamNodeCodeGaps, node, (short) -1);
-				break;
-			case TERMINUS:
-				switch (getLocalType()) {
-					case ENTRY_NODE:
-						assert !node.isRemoteCodeSet() : node.isRemoteCodeSet();
-						nodeCode = registerNode(upstreamNodes, upstreamNodeCodeGaps, node, (short) 1);
-						break;
-					case EXIT_NODE:
-						assert !node.isRemoteCodeSet() : node.isRemoteCodeSet();
-						nodeCode = registerNode(downstreamNodes, downstreamNodeCodeGaps, node, (short) -1);
-						break;
-					default:
-						throw new IllegalStateException("Invalid client type " + getLocalType());
-				}
-				break;
-			default:
-				throw new IllegalStateException("Invalid session type " + node.getSessionType());
-		}
-		return nodeCode;
+	protected short registerUpstream(RemoteNode<T> node) {
+		return registerNode(upstreamNodes, upstreamNodeCodeGaps, node, (short) 1);
 	}
 
-	private synchronized RemoteNode<T> deregisterNode(SortedMap<Short, RemoteNode<T>> nodes, Queue<Short> gaps, short nodeCode) {
+	protected short registerDownstream(RemoteNode<T> node) {
+		return registerNode(downstreamNodes, downstreamNodeCodeGaps, node, (short) -1);
+	}
+
+	public abstract short registerNode(RemoteNode<T> node);
+
+	protected synchronized RemoteNode<T> deregisterNode(SortedMap<Short, RemoteNode<T>> nodes, Queue<Short> gaps, short nodeCode) {
 		Short oNodeCode = Short.valueOf(nodeCode);
 		// don't add nodeCode to gaps if auto increment will take care of it
 		if (!nodes.isEmpty() && nodes.comparator().compare(oNodeCode, nodes.lastKey()) < 0)
@@ -221,34 +174,28 @@ public abstract class LocalRouter<T extends LocalRouter<T>> {
 		return nodes.remove(oNodeCode);
 	}
 
-	public RemoteNode<T> deregisterNode(SessionType sessionType, short nodeCode) {
-		switch (sessionType) {
-			case UPWARDS_RELAY:
-				assert getLocalType() == ClientType.CENTRAL_RELAY && nodeCode > 0 || getLocalType() == ClientType.EXIT_NODE && nodeCode == ClientType.CENTRAL_RELAY_NODE_CODE;
-				return deregisterNode(upstreamNodes, upstreamNodeCodeGaps, nodeCode);
-			case DOWNWARDS_RELAY:
-				assert getLocalType() == ClientType.CENTRAL_RELAY && nodeCode < 0 || getLocalType() == ClientType.ENTRY_NODE && nodeCode == ClientType.CENTRAL_RELAY_NODE_CODE;
-				return deregisterNode(downstreamNodes, downstreamNodeCodeGaps, nodeCode);
-			case TERMINUS:
-				switch (getLocalType()) {
-					case ENTRY_NODE:
-						assert nodeCode > 0;
-						return deregisterNode(upstreamNodes, upstreamNodeCodeGaps, nodeCode);
-					case EXIT_NODE:
-						assert nodeCode < 0;
-						return deregisterNode(downstreamNodes, downstreamNodeCodeGaps, nodeCode);
-					default:
-						throw new IllegalStateException("Invalid client type " + getLocalType());
-				}
-			default:
-				throw new IllegalStateException("Invalid session type " + sessionType);
-		}
+	protected RemoteNode<T> deregisterUpstream(short nodeCode) {
+		return deregisterNode(upstreamNodes, upstreamNodeCodeGaps, nodeCode);
 	}
+
+	protected RemoteNode<T> deregisterDownstream(short nodeCode) {
+		return deregisterNode(downstreamNodes, downstreamNodeCodeGaps, nodeCode);
+	}
+
+	public abstract RemoteNode<T> deregisterNode(SessionType sessionType, short nodeCode);
 
 	public void deregisterNode(RemoteNode<T> node) {
 		RemoteNode<T> removed = deregisterNode(node.getSessionType(), node.getRemoteCode());
 		if (removed != node)
 			throw new IllegalStateException("Deregistered " + removed + " instead of " + node);
+	}
+
+	public abstract ClientType getRemoteType(SessionType link);
+
+	public abstract RemoteNode<T> getCentralRelayLink();
+
+	public void onConnectFailed(SessionType sessionType, Map<String, Object> properties, Throwable ex) {
+		getClientManager().close("Failed to establish connection with " + RemoteNode.getRemoteTypeString(sessionType, getRemoteType(sessionType)), ex);
 	}
 
 	public void dispose() {

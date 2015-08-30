@@ -1,4 +1,4 @@
-package in.kevinj.natladder.common.model;
+package in.kevinj.natladder.centralrelay;
 
 import java.util.HashSet;
 import java.util.Set;
