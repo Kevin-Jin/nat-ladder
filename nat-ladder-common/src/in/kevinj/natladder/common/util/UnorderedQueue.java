@@ -29,11 +29,11 @@ public class UnorderedQueue {
 		queued.offer(element);
 	}
 
-	public boolean shouldWrite() {
+	public boolean enter() {
 		return writeInProgress.compareAndSet(false, true);
 	}
 
-	public void setCanWrite() {
+	public void exit() {
 		writeInProgress.set(false);
 	}
 

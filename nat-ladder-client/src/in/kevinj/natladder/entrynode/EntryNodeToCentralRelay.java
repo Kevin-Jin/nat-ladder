@@ -120,13 +120,21 @@ public class EntryNodeToCentralRelay extends RemoteRouter<EntryNodeClientRegistr
 
 		getLocalNode().setRelayChain(ourTerminus, exitNodeCode, theirTerminus);
 		RemoteNode<EntryNodeClientRegistry> terminus = getNextNode(ourTerminus);
-		LOG.log(Level.INFO, "Connection with {0} ({1}) at {2} piped through", new Object[] { terminus.getRemoteTypeString(), terminus.getRemoteCode(), terminus.getClientSession().getAddress() });
+		if (terminus != null) {
+			terminus.flushRaw();
+			LOG.log(Level.INFO, "Connection with {0} ({1}) at {2} piped through", new Object[] { terminus.getRemoteTypeString(), terminus.getRemoteCode(), terminus.getClientSession().getAddress() });
+		}
+		// terminus can be null if notifyFoundCutExternal() sends PIPE_FAIL message to exit node
+		// but exit node sends us PIPE_MADE before it receives our PIPE_FAIL
 	}
 
 	@Override
 	protected void processPipeFail(PacketParser packet) {
 		short ourTerminus = packet.readShort();
 		RemoteNode<EntryNodeClientRegistry> terminus = getNextNode(ourTerminus);
-		terminus.quietClose("Lost connection on source nocde");
+		if (terminus != null)
+			terminus.quietClose("Lost connection on source node");
+		// terminus can be null if notifyFoundCutExternal() sends PIPE_FAIL message to exit node
+		// but exit node sends us PIPE_MADE before it receives our PIPE_FAIL
 	}
 }

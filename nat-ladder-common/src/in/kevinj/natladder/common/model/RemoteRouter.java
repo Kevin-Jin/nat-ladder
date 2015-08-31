@@ -3,6 +3,7 @@ package in.kevinj.natladder.common.model;
 import in.kevinj.natladder.common.util.PacketParser;
 import in.kevinj.natladder.common.util.Pair;
 
+import java.nio.ByteBuffer;
 import java.util.logging.Level;
 
 public abstract class RemoteRouter<T extends LocalRouter<T>> extends RemoteNode<T> {
@@ -145,6 +146,16 @@ public abstract class RemoteRouter<T extends LocalRouter<T>> extends RemoteNode<
 		} finally {
 			packet.dispose();
 		}
+	}
+
+	@Override
+	public void deferRaw(ByteBuffer readBuffer) {
+		throw new UnsupportedOperationException(getSessionType() + " does not support raw connections");
+	}
+
+	@Override
+	public void flushRaw() {
+		throw new UnsupportedOperationException(getSessionType() + " does not support raw connections");
 	}
 
 	@Override

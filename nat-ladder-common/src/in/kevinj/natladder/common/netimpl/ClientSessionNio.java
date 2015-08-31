@@ -71,7 +71,7 @@ public class ClientSessionNio<T extends LocalRouter<T>> extends ClientSession<T>
 	 * channel is closed.
 	 */
 	/* package-private */ int tryFlushSendQueue() {
-		if (!sendQueue.shouldWrite())
+		if (!sendQueue.enter())
 			return -1;
 		Iterator<ByteBuffer> iter = null;
 		ByteBuffer buf = null;
@@ -101,7 +101,7 @@ public class ClientSessionNio<T extends LocalRouter<T>> extends ClientSession<T>
 				if (iter != null)
 					while (iter.hasNext())
 						sendQueue.insert(iter.next());
-				sendQueue.setCanWrite();
+				sendQueue.exit();
 			}
 		} catch (IOException ex) {
 			//does an IOException in write always mean an invalid channel?

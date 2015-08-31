@@ -13,6 +13,8 @@ import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channel;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.Iterator;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -128,14 +130,18 @@ public abstract class ClientSession<T extends LocalRouter<T>> {
 		return readBuffer;
 	}
 
-	private void logDroppedPacket() {
+	private void logDroppedPacket(ByteBuffer buf) {
 		if (LOG.isLoggable(Level.FINER)) {
-			readBuffer.flip();
-			byte[] contents = new byte[readBuffer.remaining()];
-			readBuffer.get(contents);
+			buf.flip();
+			byte[] contents = new byte[buf.remaining()];
+			buf.get(contents);
 
 			LOG.log(Level.FINER, "Dropped packet {0}", Arrays.toString(contents));
 		}
+	}
+
+	private void logDroppedPacket() {
+		logDroppedPacket(readBuffer);
 	}
 
 	private boolean processHeader(int readBytes) {
@@ -268,18 +274,23 @@ public abstract class ClientSession<T extends LocalRouter<T>> {
 			// non-blocking read didn't find any body content immediately after header
 			return false;
 
-		// received message to be forwarded
-		short[] relayChain = model.getLocalNode().getRelayChain(model.getRemoteCode());
-		if (relayChain == null)
-			throw new IllegalStateException("No pipe to exit node for " + SessionType.TERMINUS + " " + model.getRemoteCode());
-
 		int recvPktRemaining = readBuffer.remaining();
 		boolean bufferSafe = false;
 		try {
+			// received message to be forwarded
+			short[] relayChain = model.getLocalNode().getRelayChain(model.getRemoteCode());
+
 			RemoteNode<T> nextNode = model.getNextNode();
-			if (nextNode == null) {
+			if (relayChain == null) {
+				// if entry node, queue up messages until we get PIPE_MADE
+				// or PIPE_FAILED from exit node. time out after 1 minute or so
+				// if no response received and let flushQueuedRaw() run.
+				model.deferRaw(readBuffer);
+				bufferSafe = true;
+			} else if (nextNode == null) {
 				model.foundNextNodeCut();
 				logDroppedPacket();
+				expectedRelayChainLength = relayChain.length;
 			} else {
 				// must first prefix packet with received packet length and the relay chain.
 				// TODO: if relayChain has changed since last message was received,
@@ -294,6 +305,7 @@ public abstract class ClientSession<T extends LocalRouter<T>> {
 					readBuffer.putShort(Integer.SIZE / 8 + Short.SIZE / 8 * i, relayChain[i]);
 				nextNode.getClientSession().writeMessage(readBuffer);
 				bufferSafe = true;
+				expectedRelayChainLength = relayChain.length;
 			}
 		} catch (Throwable t) {
 			LOG.log(Level.WARNING, "Error while forwarding raw packet from " + model.getRemoteTypeString(), t);
@@ -309,12 +321,50 @@ public abstract class ClientSession<T extends LocalRouter<T>> {
 		// once all bytes in the buffer have been written to nextMessageDest.
 		readBuffer = model.getLocalNode().getBufferCache().takeBuffer();
 		// must reserve space for packet prefix (payload length and relay chain)
-		expectedRelayChainLength = relayChain.length;
 		readBuffer.position(Integer.SIZE / 8 + Short.SIZE / 8 * expectedRelayChainLength);
 		// note that (recvPktRemaining == readBuffer's unused capacity).
 		// if readBuffer was full, it's probable that we have more body queued up
 		// that couldn't entirely fit into the buffer.
 		return recvPktRemaining == 0;
+	}
+
+	public void disposeQueuedRaw(Collection<ByteBuffer> bufs) {
+		for (Iterator<ByteBuffer> iter = bufs.iterator(); iter.hasNext(); ) {
+			model.getLocalNode().getBufferCache().tryReturnBuffer(iter.next());
+			iter.remove();
+		}
+	}
+
+	public void flushQueuedRaw(Collection<ByteBuffer> bufs) {
+		try {
+			short[] relayChain = model.getLocalNode().getRelayChain(model.getRemoteCode());
+			if (relayChain == null)
+				throw new IllegalStateException("No pipe to exit node for " + SessionType.TERMINUS + " " + model.getRemoteCode());
+
+			RemoteNode<T> nextNode = model.getNextNode();
+			if (nextNode == null) {
+				model.foundNextNodeCut();
+				for (ByteBuffer unprocessed : bufs)
+					logDroppedPacket(unprocessed);
+			} else {
+				for (Iterator<ByteBuffer> iter = bufs.iterator(); iter.hasNext(); ) {
+					ByteBuffer buf = iter.next();
+					buf.putInt(0, buf.position() - (Integer.SIZE / 8 + Short.SIZE / 8));
+					for (int i = 0; i < relayChain.length; i++)
+						buf.putShort(Integer.SIZE / 8 + Short.SIZE / 8 * i, relayChain[i]);
+					nextNode.getClientSession().writeMessage(buf);
+					iter.remove();
+				}
+			}
+
+			expectedRelayChainLength = relayChain.length;
+		} catch (Throwable t) {
+			LOG.log(Level.WARNING, "Error while forwarding raw packet from " + model.getRemoteTypeString(), t);
+			for (ByteBuffer unprocessed : bufs)
+				logDroppedPacket(unprocessed);
+		} finally {
+			disposeQueuedRaw(bufs);
+		}
 	}
 
 	/* package-private */ boolean readMessage(int readBytes) {

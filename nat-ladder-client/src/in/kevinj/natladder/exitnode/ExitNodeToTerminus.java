@@ -4,6 +4,7 @@ import in.kevinj.natladder.common.model.LocalRouter;
 import in.kevinj.natladder.common.model.PacketHeaders;
 import in.kevinj.natladder.common.model.RemoteNode;
 
+import java.nio.ByteBuffer;
 import java.util.Map;
 import java.util.logging.Level;
 
@@ -32,5 +33,15 @@ public class ExitNodeToTerminus extends RemoteNode<ExitNodeClientRegistry> {
 			// if other end is already disconnected, disconnect this end
 			quietClose("Lost connection on source node");
 		}
+	}
+
+	@Override
+	public void deferRaw(ByteBuffer readBuffer) {
+		throw new UnsupportedOperationException(getLocalNode().getLocalType() + " does not support queueing raw messages");
+	}
+
+	@Override
+	public void flushRaw() {
+		throw new UnsupportedOperationException(getLocalNode().getLocalType() + " does not support queueing raw messages");
 	}
 }

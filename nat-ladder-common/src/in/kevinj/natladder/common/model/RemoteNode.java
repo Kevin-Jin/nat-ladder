@@ -3,6 +3,7 @@ package in.kevinj.natladder.common.model;
 import in.kevinj.natladder.common.netimpl.ClientSession;
 import in.kevinj.natladder.common.util.PacketParser;
 
+import java.nio.ByteBuffer;
 import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -117,6 +118,10 @@ public abstract class RemoteNode<T extends LocalRouter<T>> {
 	public void processControlPacket(PacketParser packet) {
 		throw new UnsupportedOperationException("RemoteNode does not accept control packets");
 	}
+
+	public abstract void deferRaw(ByteBuffer readBuffer);
+
+	public abstract void flushRaw();
 
 	public void foundNextNodeCut() {
 		// if we're a TERMINUS, then next node must be central relay.
