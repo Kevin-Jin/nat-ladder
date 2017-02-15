@@ -1,4 +1,4 @@
-dp0=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"/"
+dp0=$( cd "$( dirname "$(readlink -f "$0")" )" && pwd )"/"
 echo -ne '\033]2;Exit Relay\007'
 CENTRAL_RELAY_HOST="kevinj.in"
 CENTRAL_RELAY_PORT=3425
